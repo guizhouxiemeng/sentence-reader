@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>阅读器（分区版）· 认知状态推断层验证</title>
+<style>
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; height:100%; background:#0f1115;
+    color:#e8eaed; font-family:"Microsoft YaHei",-apple-system,Segoe UI,sans-serif; }
+  /* 修正记录：这里原本是 height:100vh + overflow:hidden，
+     而 #paper 又是 position:absolute —— 内容超出部分被直接裁掉，
+     页面无法滚动（现场反馈："文本上下拖动不了"）。
+     改为正常文档流：stage 只是普通容器，纸张用相对定位居中，
+     超出一屏时由页面自身滚动。 */
+  #stage { position:relative; width:100%; min-height:100vh; }
+  /* 两栏【容器】而不是 CSS 多栏。
+     踩过的坑：先前用 column-count:2 + column-fill:auto + height:auto，
+     结果内容全塞进左栏、右栏空着（column-fill:auto 需要有确定高度才分栏）。
+     而且 CSS 多栏是"把内容分成左右两半"，语义上也不等于
+     "同一篇内容有左右两个可注视区块"。
+     现在用两个显式栏容器：奇数段进左栏、偶数段进右栏。
+     这样"在看左栏还是右栏"就是字面意思，与水平分区判定一一对应。 */
+  #paper { position:relative; margin:0 auto;
+    width:min(1500px,94vw); padding:92px 0 160px; }
+  #cols { display:grid; grid-template-columns:1fr 1fr; gap:0 56px; align-items:start; }
+  .col { display:flex; flex-direction:column; }
+  h1 { font-size:25px; margin:0 0 8px; }
+  .sub { color:#9aa0a6; font-size:14px; margin-bottom:26px; line-height:1.7; }
+  .para { position:relative; font-size:17px; line-height:1.8; margin:0 0 22px;
+    break-inside:avoid; -webkit-column-break-inside:avoid;
+    padding:10px 14px; border-radius:8px; border-left:3px solid transparent;
+    transition:background .15s, border-color .15s; }
+  /* 当前所在区块：整区高亮（不再是光标） */
+  .para.inzone { background:rgba(96,165,250,.13); border-left-color:#60a5fa; }
+  .para.prep   { background:rgba(245,166,35,.10); border-left-color:#f5a623; }
+  .para.block  { background:rgba(255,107,107,.15); border-left-color:#ff6b6b; }
+  .para.mark   { outline:2px solid #4ade80; outline-offset:2px; }
+  .para .tag { position:absolute; right:-2px; top:8px; font-size:12px; color:#9aa0a6; }
+  /* 区块标记条：贴在纸张右侧，随页面滚动（原先相对 stage 绝对定位，滚动后会错位） */
+  #zones { position:absolute; left:0; top:0; width:100%; height:100%;
+    pointer-events:none; }
+  .zonebar { position:absolute; border:1px dashed rgba(96,165,250,.5);
+    border-radius:6px; pointer-events:none; }
+  .zonebar span { font-size:13px; color:#60a5fa; font-weight:700; }
+  .zonebar span { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    font-size:13px; color:#60a5fa; font-weight:700; }
+
+  #topbar { position:fixed; left:50%; top:12px; transform:translateX(-50%);
+    z-index:30; display:flex; gap:9px; align-items:center;
+    background:rgba(22,26,33,.96); border:1px solid #2b3240; border-radius:10px;
+    padding:8px 12px; font-size:13px; }
+  #topbar button { background:#262c38; color:#e8eaed; border:1px solid #39414f;
+    padding:7px 12px; border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; }
+  #topbar button.go { background:#2563eb; border-color:#2563eb; }
+  #topbar button:disabled { opacity:.4; cursor:default; }
+
+  #hud { position:fixed; left:12px; bottom:12px; z-index:30;
+    background:rgba(10,12,16,.96); border:1px solid #3a4457; border-radius:10px;
+    padding:12px 15px; font-size:12.5px; line-height:1.75; white-space:pre;
+    font-family:ui-monospace,Consolas,monospace; max-width:680px; display:none; }
+  #hud.on { display:block; } #hud b { color:#4ade80; }
+  #hud .warn { color:#ff6b6b; } #hud .dim { color:#9aa0a6; }
+
+  #cam { position:fixed; right:12px; bottom:12px; width:190px; z-index:30;
+    border:1px solid #39414f; border-radius:8px; transform:scaleX(-1); display:none; }
+  #cam.on { display:block; }
+  #center { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    z-index:40; text-align:center; display:none; }
+  #center.on { display:block; }
+  #center .l1 { font-size:34px; font-weight:700; margin-bottom:10px; }
+  #center .l2 { font-size:17px; color:#4ade80; margin-bottom:6px; }
+  #center .l3 { font-size:14px; color:#9aa0a6; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="paper">
+    <h1>注意力预测层 · 分区版端到端验证</h1>
+    <div class="sub">
+      本版<b>不使用连续光标</b>：视线只判定"你在哪个区块"，区块内的信息交给推断层。<br>
+      读到觉得卡住、需要反复看的地方，按 <b>空格</b> 标注（真值）。
+    </div>
+    <div id="cols">
+      <div class="col" id="col0"></div>
+      <div class="col" id="col1"></div>
+    </div>
+    <div id="zones"></div>
+  </div>
+  <video id="cam" autoplay muted playsinline></video>
+
+  <div id="topbar">
+    <button id="btn-init" class="go">① 授权摄像头并加载模型</button>
+    <button id="btn-fs">② 进入全屏</button>
+    <button id="btn-calib" disabled>③ 区块标定</button>
+    <button id="btn-start" disabled>④ 开始阅读</button>
+    <button id="btn-zones" title="切换区块数，需重新标定">区块: 2</button>
+    <button id="btn-hud">HUD</button>
+    <button id="btn-export" disabled>导出</button>
+    <span id="status" style="color:#9aa0a6">未开始</span>
+  </div>
+  <div id="hud"></div>
+  <div id="center"><div class="l1"></div><div class="l2"></div><div class="l3"></div></div>
+</div>
+
+<script type="module">
+// ============================================================================
+//  分区版阅读器
+//
+//  与连续光标版的根本区别：视线只输出【区块编号】，不输出坐标。
+//  区块编号直接喂给认知状态推断层（它要的就是段级量）。
+//
+//  复用 demo 里已验证 80.4% 的组件，未重写：
+//      buildGazeFeatures / fitGazeZoneClassifier / predictGazeZone / zoneGridIndex
+// ============================================================================
+
+const VENDOR = '../vendor/';
+let FaceLandmarker = null, FilesetResolver = null;
+
+const GAZE_LM = { irisL: 468, irisR: 473, eyeOuterL: 33, eyeOuterR: 263,
+                  lTop: 159, lBot: 145, rTop: 386, rBot: 374 };
+const N_FEAT = 7;
+
+// 区间划分：纵向 4 区（对应 8 个段落，每区 2 段）
+// ---------------------------------------------------------------------------
+//  区块划分：必须用【水平】分区（左右两半），不能用垂直分区
+//
+//  这是一次根本性错误的修正。原实现用 ZONE_ROWS = 2（上下分区），
+//  现场测出"特征可分性 0.75（不可分）"。回头核对早期数据才发现原因：
+//
+//      zone_partition_search.py 的实测结论：
+//        上下 二分类 63~77%    左右 二分类 75~85%
+//        2x2 四分类  39~51%
+//      "上下（垂直）明显弱于左右（水平）—— 与本项目反复验证的
+//       『垂直信号不可靠』完全一致"
+//
+//  也就是说 80.4% 那个数字是【水平 1x2（左右二分）】，
+//  而我做的上下分区恰好选了最不可靠的方向（垂直弱，且被眼皮污染过）。
+//
+//  所以正文排成【左右两栏】，区块按左右分 —— 让可靠的水平信号去承担分区。
+//  同理：不要试 3 列以上（水平 1x3 只有 65.2%）。
+// ---------------------------------------------------------------------------
+let ZONE_COLS = 2, ZONE_ROWS = 1;
+const N_ZONES = () => ZONE_COLS * ZONE_ROWS;
+
+let SM = { name: '轻', ema: 0.30, cutoff: 1.4, beta: 0.03 };
+
+// ---------------------------------------------------------------- 工具
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function ridgeFit(Z, y, lam) {
+  // 标准化空间里的岭回归（与 demo 的数值策略一致，避免 |β| 过大导致数值问题）
+  const d = Z[0].length, n = Z.length;
+  const G = [];
+  for (let i = 0; i < d; i++) {
+    G.push(new Array(d).fill(0));
+  }
+  const b = new Array(d).fill(0);
+  for (let k = 0; k < n; k++) {
+    const z = Z[k], t = y[k];
+    for (let i = 0; i < d; i++) {
+      b[i] += z[i] * t;
+      for (let j = 0; j < d; j++) G[i][j] += z[i] * z[j];
+    }
+  }
+  for (let i = 0; i < d - 1; i++) G[i][i] += lam;   // 不惩罚偏置项
+  // 高斯消元
+  const A = G.map((row, i) => row.concat([b[i]]));
+  for (let c = 0; c < d; c++) {
+    let p = c;
+    for (let r = c + 1; r < d; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    if (Math.abs(A[p][c]) < 1e-12) return null;
+    const tmp = A[c]; A[c] = A[p]; A[p] = tmp;
+    for (let r = 0; r < d; r++) {
+      if (r === c) continue;
+      const f = A[r][c] / A[c][c];
+      if (!f) continue;
+      for (let k = c; k <= d; k++) A[r][k] -= f * A[c][k];
+    }
+  }
+  const out = new Array(d);
+  for (let i = 0; i < d; i++) out[i] = A[i][d] / A[i][i];
+  return out.every(Number.isFinite) ? out : null;
+}
+
+// ---------------------------------------------------------------- 视线特征
+// 与 demo 完全一致（这是实测 80.4% 的那一套，不重写）
+function buildGazeFeatures(lm) {
+  const g = (i) => lm[i];
+  const dx = (a, b) => g(a).x - g(b).x;
+  const dy = (a, b) => g(a).y - g(b).y;
+  const iod = Math.hypot(dx(GAZE_LM.eyeOuterR, GAZE_LM.eyeOuterL),
+                         dy(GAZE_LM.eyeOuterR, GAZE_LM.eyeOuterL)) || 1e-6;
+  const irx = (g(GAZE_LM.irisL).x + g(GAZE_LM.irisR).x) / 2;
+  const iry = (g(GAZE_LM.irisL).y + g(GAZE_LM.irisR).y) / 2;
+  const gx = (irx - (g(GAZE_LM.eyeOuterL).x + g(GAZE_LM.eyeOuterR).x) / 2) / iod;
+  return [iry, irx, gx, gx * gx, iry * iry,
+          dx(GAZE_LM.irisL, GAZE_LM.eyeOuterL) / iod,
+          dx(GAZE_LM.irisR, GAZE_LM.eyeOuterR) / iod];
+}
+
+// ---------------------------------------------------------------- 区间索引
+function zoneGridIndex(x, y, cols, rows) {
+  const cx = clamp(Math.floor(x / innerWidth * cols), 0, cols - 1);
+  const cy = clamp(Math.floor(y / innerHeight * rows), 0, rows - 1);
+  return cy * cols + cx;
+}
+
+// ---------------------------------------------------------------- 区块分类器
+// 与 demo 一致：每个区块一个 ridge 二分类，取最高分
+function fitGazeZoneClassifier(samples, cols, rows) {
+  if (!samples || samples.length < 40) return null;
+  const nFeat = samples[0].f.length, n = samples.length;
+  const mu = [], sd = [];
+  for (let i = 0; i < nFeat; i++) {
+    const v = samples.map(s => s.f[i]);
+    const m = v.reduce((a, b) => a + b, 0) / n;
+    const s2 = Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / n) || 1e-9;
+    mu.push(m); sd.push(s2);
+  }
+  const std = (f) => f.map((v, i) => (v - mu[i]) / sd[i]);
+  const Z = samples.map(s => std(s.f).concat([1]));
+  const nz = cols * rows;
+  const labs = samples.map(s => zoneGridIndex(s.px, s.py, cols, rows));
+  const B = [];
+  for (let lv = 0; lv < nz; lv++) {
+    const target = labs.map(l => (l === lv ? 1 : 0));
+    const b = ridgeFit(Z, target, 10.0);
+    if (!b) return null;
+    B.push(b);
+  }
+  let ok = 0;
+  for (let i = 0; i < n; i++) {
+    const sc = B.map(b => Z[i].reduce((a, x, j) => a + x * b[j], 0));
+    let best = 0;
+    for (let k = 1; k < sc.length; k++) if (sc[k] > sc[best]) best = k;
+    if (best === labs[i]) ok++;
+  }
+  return { mu, sd, B, cols, rows, trainAcc: ok / n, nSamples: n };
+}
+
+function predictGazeZone(gf) {
+  const c = S.gazeZone;
+  if (!c || !gf || gf.length !== c.mu.length) return null;
+  const z = gf.map((v, i) => (v - c.mu[i]) / c.sd[i]).concat([1]);
+  if (z.some(v => !Number.isFinite(v))) return null;
+  const sc = c.B.map(b => z.reduce((a, x, j) => a + x * b[j], 0));
+  let best = 0;
+  for (let k = 1; k < sc.length; k++) if (sc[k] > sc[best]) best = k;
+  const sorted = sc.slice().sort((a, b) => b - a);
+  const conf = clamp((sorted[0] - sorted[1]) / (Math.abs(sorted[0]) + 1e-6), 0, 1);
+  return { zone: best, conf, scores: sc };
+}
+
+// ---------------------------------------------------------------- 眨眼检测
+// 与连续光标版一致（照 EyeTrax 的做法），参数已验证可用
+const EAR = { hist: [], minHistory: 15, ratio: 0.62, warmupThr: 0.18, thr: 0 };
+function medianOf(a) {
+  const b = a.slice().sort((x, y) => x - y), n = b.length;
+  return n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2;
+}
+function computeEAR(lm) {
+  const g = (i) => lm[i];
+  const lw = Math.hypot(g(33).x - g(133).x, g(33).y - g(133).y) + 1e-9;
+  const lh = Math.hypot(g(159).x - g(145).x, g(159).y - g(145).y);
+  const rw = Math.hypot(g(263).x - g(362).x, g(263).y - g(362).y) + 1e-9;
+  const rh = Math.hypot(g(386).x - g(374).x, g(386).y - g(374).y);
+  return ((lh / lw) + (rh / rw)) / 2;
+}
+function isBlinking(ear) {
+  EAR.hist.push(ear);
+  if (EAR.hist.length > 90) EAR.hist.shift();
+  EAR.thr = (EAR.hist.length >= EAR.minHistory)
+    ? medianOf(EAR.hist) * EAR.ratio : EAR.warmupThr;
+  return ear < EAR.thr;
+}
+
+// ============================================================================
+//  认知状态推断层（与 tools/cognitive_state.py 参数一致）
+//  唯一区别：region id 就是 zone id，不再需要矩形归属判定
+// ============================================================================
+const DT = 1 / 30;
+const STILL_SPEED_PX_S = 3845;      // 见连续光标版的说明：用逐帧步长 p90 的 3 倍
+const MIN_VISIT_SEC = 0.15;
+const T_SKIP = 0.35, T_READ_LO = 0.50, T_READ_HI = 1.80;
+const T_BLOCKED = 2.00, T_PREPARE = 1.50;
+const AUX_REVISIT_MIN = 2, AUX_LONG_VISIT_MULT = 2.0;
+const AUTO_REVEAL_WINDOW_S = 30.0, AUTO_REVEAL_COUNT = 3;
+let CPS = 5.0;                       // 字/秒，从使用者自己的正常段落估出
+
+class Tracker {
+  constructor(zones) {
+    this.zones = zones;              // [{zid, chars, y0, y1, els:[]}]
+    this.dwell = {}; this.visits = {}; this.visitDurs = {};
+    this.cur = null; this.curStart = 0; this.t = 0;
+    this.events = []; this.blockedHits = {}; this.lastAuto = {};
+    this.prepared = new Set(); this.reveals = [];
+    this.cpsSamples = [];
+  }
+  baseOf(zid) { const z = this.zones.find(v => v.zid === zid); return z ? Math.max(z.chars / CPS, 0.2) : null; }
+  revisitOf(zid) { return Math.max((this.visits[zid] || 0) - 1, 0); }
+  effortOf(zid) { return this.dwell[zid] || 0; }
+  ratioOf(zid) { const b = this.baseOf(zid); return (b && b > 0) ? this.effortOf(zid) / b : null; }
+  // 模糊置信度加权：低置信度的观测少计时（帧只算一部分）
+  update(zid, conf) {
+    this.t += DT;
+    const w = clamp(conf === undefined ? 1 : (0.4 + 0.6 * conf), 0.3, 1);
+    if (zid !== null) this.dwell[zid] = (this.dwell[zid] || 0) + DT * w;
+    if (zid !== this.cur) {
+      if (this.cur !== null && this.curStart) {
+        const dur = this.t - this.curStart;
+        if (dur >= MIN_VISIT_SEC) {
+          (this.visitDurs[this.cur] = this.visitDurs[this.cur] || []).push(dur);
+        } else {
+          this.visits[this.cur] = Math.max((this.visits[this.cur] || 0) - 1, 0);
+        }
+      }
+      this.cur = zid;
+      this.curStart = zid !== null ? this.t : 0;
+      if (zid !== null) this.visits[zid] = (this.visits[zid] || 0) + 1;
+    }
+    return this.classify(zid);
+  }
+  classify(zid) {
+    if (zid === null) return { state: 'off', rid: null };
+    const ratio = this.ratioOf(zid);
+    if (ratio === null) return { state: 'off', rid: zid };
+    const rv = this.revisitOf(zid);
+    const durs = this.visitDurs[zid] || [];
+    const base = this.baseOf(zid);
+    let longest = durs.length ? Math.max(...durs) : 0;
+    if (zid === this.cur && this.curStart) longest = Math.max(longest, this.t - this.curStart);
+    const aux = [];
+    if (rv >= AUX_REVISIT_MIN) aux.push('回看' + rv + '次');
+    if (base && longest > base * AUX_LONG_VISIT_MULT) aux.push('单次' + longest.toFixed(1) + 's');
+    const ev = this.events.filter(e => e[2] === zid && this.t - e[0] <= 30);
+    if (ev.length) aux.push('操作' + ev.length + '次');
+    const info = { ratio, revisit: rv, effort: this.effortOf(zid), base, longest, aux };
+    let state;
+    if (ratio > T_BLOCKED && aux.length) state = 'blocked';
+    else if (ratio < T_SKIP && rv === 0) state = 'skipped';
+    else state = 'reading';
+    if (ratio > T_PREPARE && !this.prepared.has(zid)) { this.prepared.add(zid); info.preparedNow = zid; }
+    if (state === 'blocked') {
+      (this.blockedHits[zid] = this.blockedHits[zid] || []).push(this.t);
+      const recent = this.blockedHits[zid].filter(v => this.t - v <= AUTO_REVEAL_WINDOW_S);
+      const last = this.lastAuto[zid] === undefined ? -1e9 : this.lastAuto[zid];
+      if (recent.length >= AUTO_REVEAL_COUNT && this.t - last > AUTO_REVEAL_WINDOW_S) {
+        this.reveals.push([this.t, zid, 'auto-repeat']);
+        this.lastAuto[zid] = this.t;
+        this.blockedHits[zid] = [];
+      }
+    }
+    return { state, rid: zid, info };
+  }
+}
+
+// ============================================================================
+//  正文与区块
+// ============================================================================
+const TEXT = [
+  '这是用于验证认知状态推断层的一段说明文字。请按平时的习惯阅读，不需要刻意放慢或加快。系统的目标是判断你是否在某个段落上处理受阻，也就是读起来觉得卡住、需要反复看才能理解。',
+  '判断依据不是看了多久，因为看得久也可能只是这一段内容本来就多。真正的依据是是否反复回到同一段。正常前进时每一段只访问一次；而受阻时同一段会被访问两到四次。这个区别在阅读研究里叫回视次数，是一个成熟指标。',
+  '为了让系统能工作，需要先建立一个基线：你读一段正常文字平均需要多少时间。系统会在你读前几段时估计这个值，之后每一段都拿自己的实际用时与基线比较。这样做的原因是每个人的阅读速度差异很大，如果用绝对阈值，读得慢的人会被全部判成受阻。',
+  '本版不使用连续光标。视线只输出你在哪个区块，区块内的细节交给时间统计。这样做是因为连续光标对噪声极敏感，而区块判定是分类问题，容错大得多。同一套硬件下，连续坐标误差四百到一千像素，而水平二分区域判定能达到百分之八十。',
+  '区块与段落的对应关系是固定的：纵向分四个区块，每个区块包含两个段落。系统按区块累计注视时间与回看次数，再把区块的处理量与它的字数基线比较。因为响应本身就是段级的，所以区块这个粒度刚好够用，不需要更细。',
+  '当系统判断某个区块处理受阻时，它的反应是静默准备：在后台生成这一段可能需要的术语解释或背景补充，但界面上不出现任何变化。只有当使用者主动把视线移到侧边区域并停留超过零点八秒，准备好的内容才会展开。',
+  '还有一个例外情况需要处理。如果同一区块在三十秒内被连续判定受阻三次以上，说明使用者自己解决不了，此时不打断反而更糟，所以系统会自动展开一次。这个自动展开必须记入日志，因为它改变了实验的对照条件。',
+  '以上就是这段说明的全部内容。读完之后系统会给出它对每个区块的判断，以及它认为哪些区块处理受阻。你可以把它给出的结果与自己的实际感受对比，这就是对这个推断层最直接的检验。',
+];
+
+const S = {
+  model: null, video: null, active: false,
+  gazeZone: null, tracker: null, zones: [], curZone: null,
+  calibSamples: [], blinkFrames: 0, camIn: 0, camTot: 0,
+  fps: 0, frames: 0, lastFpsT: 0, ema: null, lastZone: null,
+};
+
+function buildLayout() {
+  // 两栏容器：奇数段（0,2,4...）进左栏，偶数段（1,3,5...）进右栏。
+  // 这样"看左栏/右栏"与 zoneGridIndex 的左右分区一一对应。
+  const c0 = $('col0'), c1 = $('col1');
+  if (!c0 || !c1) return;
+  c0.innerHTML = ''; c1.innerHTML = '';
+  TEXT.forEach((txt, i) => {
+    const d = document.createElement('div');
+    d.className = 'para';
+    d.dataset.rid = i;
+    d.innerHTML = '<span class="tag">' + (i + 1) + '</span>' + txt;
+    (i % 2 === 0 ? c0 : c1).appendChild(d);
+  });
+  requestAnimationFrame(() => {
+    // 区块 = 栏：区块 0 是左栏的全部段落，区块 1 是右栏的全部段落。
+    // 早先按"每 N 段一区"划分，与两栏的实际排布无关，
+    // 于是判定出来的区块和读者眼前的左右栏对不上。
+    S.zones = [];
+    if (ZONE_COLS === 2 && ZONE_ROWS === 1) {
+      for (let z = 0; z < 2; z++) {
+        const idxs = [], els = [];
+        let chars = 0;
+        for (let i = z; i < TEXT.length; i += 2) {
+          idxs.push(i); chars += TEXT[i].length;
+          const el = document.querySelector('.para[data-rid="' + i + '"]');
+          if (el) els.push(el);
+        }
+        S.zones.push({ zid: z, chars, els, paras: idxs });
+      }
+      drawZoneBars();
+      if (S.tracker) S.tracker.zones = S.zones;
+      return;
+    }
+    const per = Math.ceil(TEXT.length / N_ZONES());
+    // 注意：zid 必须与 zoneGridIndex 的编号一致（第 z 行 -> zid = z），
+    // 所以这里不能用"跳过空区块"的写法去重排编号。
+    for (let z = 0; z < N_ZONES(); z++) {
+      const idxs = [];
+      for (let k = z * per; k < Math.min((z + 1) * per, TEXT.length); k++) idxs.push(k);
+      if (!idxs.length) continue;
+      let chars = 0, els = [];
+      idxs.forEach(k => {
+        chars += TEXT[k].length;
+        const el = document.querySelector('.para[data-rid="' + k + '"]');
+        if (el) els.push(el);
+      });
+      S.zones.push({ zid: z, chars, els, paras: idxs });
+    }
+    drawZoneBars();
+    if (S.tracker) S.tracker.zones = S.zones;
+  });
+}
+
+// 区块标记：水平分区下，区块就是屏幕的左右两半。
+// 用固定在视口上的两条边线标出分界，而不是跟着段落画框 ——
+// 因为判定用的 zoneGridIndex 是按【屏幕】等分的，标记必须与它同一参考系。
+function drawZoneBars() {
+  const host = $('zones');
+  host.innerHTML = '';
+  const mk = (x, label) => {
+    const d = document.createElement('div');
+    d.className = 'zonebar';
+    d.style.position = 'fixed';
+    d.style.left = x + 'px';
+    d.style.top = '0';
+    d.style.width = '1px';
+    d.style.height = '100vh';
+    d.style.border = 'none';
+    d.style.borderLeft = '1px dashed rgba(96,165,250,.45)';
+    host.appendChild(d);
+    const t = document.createElement('div');
+    t.className = 'zonebar';
+    t.style.position = 'fixed';
+    t.style.left = (x + 8) + 'px';
+    t.style.top = '50%';
+    t.style.transform = 'translateY(-50%)';
+    t.style.border = 'none';
+    t.innerHTML = '<span>' + label + '</span>';
+    host.appendChild(t);
+  };
+  for (let c = 1; c < ZONE_COLS; c++) mk(Math.round(innerWidth * c / ZONE_COLS), c + 1);
+}
+
+// ============================================================================
+//  主循环
+// ============================================================================
+let lastVideoTime = -1;
+function loop() {
+  requestAnimationFrame(loop);
+  const v = S.video;
+  if (!S.model || !v || v.readyState < 2) return;
+  S.frames++;
+  const now = performance.now();
+  if (now - S.lastFpsT > 500) {
+    S.fps = S.frames / ((now - S.lastFpsT) / 1000);
+    S.frames = 0; S.lastFpsT = now;
+  }
+  if (v.currentTime === lastVideoTime) return;
+  lastVideoTime = v.currentTime;
+
+  let out = null;
+  const tDet = performance.now();
+  try { out = S.model.detectForVideo(v, tDet); } catch (e) { return; }
+  const detMs = performance.now() - tDet;
+  S.camTot++;
+  if (!out || !out.faceLandmarks || !out.faceLandmarks.length) { updateHud(detMs); return; }
+  S.camIn++;
+
+  const lm = out.faceLandmarks[0];
+  const ear = computeEAR(lm);
+  S.ear = ear; S.earThr = EAR.thr;
+  if (isBlinking(ear)) { S.blinkFrames++; updateHud(detMs); return; }
+
+  const gf = buildGazeFeatures(lm);
+  if (gf.some(x => !Number.isFinite(x))) { updateHud(detMs); return; }
+
+  if (CAL.active) { CAL.samples.push({ f: gf, px: CAL.px, py: CAL.py }); }
+
+  // ==================================================================
+  //  区块判定 —— 迟滞（hysteresis）+ 低置信度保持
+  //
+  //  现场问题："蓝框乱跳"。原因有两个：
+  //    ① 原本用了纵向 4 区，而 demo 实测 1x4 只有 56.9% —— 本来就判不准。
+  //       已改为 2 区（80.4%）。
+  //    ② 即使判得比较准，逐帧独立判决仍会在边界附近来回跳。
+  //       分类输出是离散的，不能像坐标那样靠低通滤波平滑，
+  //       必须用【迟滞】：新区块要连续占多数一段时间才允许切换。
+  //  规则：
+  //    · 最近 12 帧里，某区块占比 >= 2/3 且连续保持 >= 0.35 秒 -> 切换
+  //    · 否则保持当前区块不变（宁可晚一点切，也不要乱跳）
+  // ==================================================================
+  // ==================================================================
+  //  区块判定 —— 多数表决 + 迟滞
+  //
+  //  这里修过两个致命 bug（现场："蓝区又开始跳了"）：
+  //    ① 原写法 `if (best === S.curZone) {...}` 而 S.curZone 初值为 null，
+  //       于是该条件永远不成立，一直走 else 分支 —— 区块根本选不出来，
+  //       表现就是"乱跳"（每帧都在重新猜）。
+  //    ② 候选计时用 `S.candZone !== S.candZone2` 判断是否重置，
+  //       但在同一句里刚把 candZone2 赋成 candZone，两者恒等，
+  //       计时永不重置 —— 迟滞形同虚设。
+  //
+  //  现在用清晰的状态：
+  //    zoneVotes  —— 最近 12 帧的原始判决
+  //    curZone    —— 当前生效区块（唯一被下游使用的量）
+  //    candZone / candSince —— 候选区块及其起始时刻
+  //  规则：候选区块连续占多数 >= 350ms 才切换；否则保持当前区块。
+  // ==================================================================
+  let zone = null, conf = 0;
+  if (S.gazeZone) {
+    const p = predictGazeZone(gf);
+    if (p) {
+      S.zoneVotes = S.zoneVotes || [];
+      S.zoneVotes.push(p.zone);
+      if (S.zoneVotes.length > 8) S.zoneVotes.shift();
+
+      S.rawZone = p.zone;          // ← 未经平滑的逐帧判决，用于诊断
+      S.rawConf = p.conf;
+
+      // ------------------------------------------------------------------
+      //  投票计数（这里修过一个致命 bug）
+      //
+      //  上一版重写时把"往 cnt 累加"的循环漏掉了，只剩 `const cnt = {}`。
+      //  于是 cnt 恒为空、best 恒为 null、frac 恒为 0，
+      //  首次分支把 S.curZone 设成 null，之后 zone 一直是 null ——
+      //  推断层永远拿不到区块，表现就是"直接不动了 / 状态 off"。
+      //  HUD 上的"票数 1:1 2:7"是显示代码自己重新统计的，
+      //  所以看起来有票，实际判定用的是空对象 —— 这也是它掩盖了 bug 的原因。
+      // ------------------------------------------------------------------
+      const cnt = {};
+      S.zoneVotes.forEach(z => { cnt[z] = (cnt[z] || 0) + 1; });
+      let best = null, bc = 0;
+      for (const k in cnt) { if (cnt[k] > bc) { bc = cnt[k]; best = +k; } }
+      const frac = bc / S.zoneVotes.length;
+      conf = frac;
+
+      if (best === null) {
+        // 窗口里没有有效投票：保持现状，不要动 curZone
+        zone = S.curZone;
+      } else if (S.curZone === undefined || S.curZone === null) {
+        // 首次（或切换区块数后重置）：直接采用当前多数，避免永远选不出来
+        S.curZone = best;
+        S.candZone = null; S.candSince = 0;
+        S.switchCount = (S.switchCount || 0);
+      } else if (best === S.curZone) {
+        // 已稳定，清空候选
+        S.candZone = null; S.candSince = 0;
+      } else if (frac >= 0.6) {
+        // 出现新的多数候选：计时，够久才切
+        if (best !== S.candZone) { S.candZone = best; S.candSince = now; }
+        if (now - S.candSince >= 200) {
+          S.curZone = S.candZone;
+          S.switchCount = (S.switchCount || 0) + 1;
+          S.candZone = null; S.candSince = 0;
+        }
+      } else {
+        // 多数不明显（票数分散）：不做任何切换
+        S.candZone = null; S.candSince = 0;
+      }
+      zone = S.curZone;
+    }
+  }
+  S.curZone = zone;
+
+  let res = null;
+  if (S.active && S.tracker && zone !== null) res = S.tracker.update(zone, conf);
+  else if (S.active && S.tracker && zone === null) res = S.tracker.update(null, 0);
+
+  paintZones(zone);
+  // 标定圆点必须画在清屏之后（本循环里没有别的 canvas 清屏，但仍放最后以防万一）
+  if (CAL.active) { paintCalibZone(); drawCalibDot(); }
+  updateHud(detMs, res);
+}
+
+function paintZones(zone) {
+  if (!S.tracker) return;
+  S.zones.forEach(z => {
+    const on = (zone === z.zid);
+    z.els.forEach(el => el.classList.toggle('inzone', on));
+    const st = S.tracker.classify(z.zid);
+    z.els.forEach(el => {
+      el.classList.toggle('prep', S.tracker.prepared.has(z.zid));
+      el.classList.toggle('block', st.state === 'blocked');
+    });
+  });
+}
+
+function updateHud(detMs, res) {
+  const el = $('hud');
+  if (!el || !el.classList.contains('on')) return;
+  const tr = S.tracker;
+  const L = [];
+  L.push('<b>帧</b> ' + Math.round(S.fps) + ' fps　<b>检测</b> ' +
+         (detMs||0).toFixed(1) + ' ms　<b>在画面</b> ' +
+         (S.camTot ? Math.round(100*S.camIn/S.camTot) : 0) + '%');
+  if (S.ear !== undefined) {
+    L.push('<b>EAR</b> ' + S.ear.toFixed(3) + '　阈值 ' + (S.earThr||0).toFixed(3) +
+           '　' + (S.ear < (S.earThr||0) ? '<span class="warn">闭眼(丢帧)</span>' : '睁眼') +
+           '　丢帧率 ' + (S.camTot ? Math.round(100*(S.blinkFrames||0)/S.camTot) : 0) + '%');
+  }
+  if (S.sep) {
+    const v = S.sep.sep;
+    const col = v >= 2 ? '#4ade80' : (v >= 1 ? '#f5a623' : '#ff6b6b');
+    L.push('<b>特征可分性</b> <span style="color:' + col + '">' + v.toFixed(2) +
+           '</span>（区块间距离/区块内离散度）　' +
+           (v >= 2 ? '可分性好' : (v >= 1 ? '勉强可分' : '不可分 —— 调分类器没用')) +
+           '　各组 ' + S.sep.counts.join(' '));
+  }
+  if (S.gazeZone) {
+    L.push('<b>分类器</b> 训练样本 ' + S.gazeZone.nSamples +
+           '　<b>泛化(留一)</b> ' +
+           (S.looAcc !== null && S.looAcc !== undefined
+              ? Math.round(100 * S.looAcc) + '%（' + (S.looFolds||0) + ' 折 / ' + S.looN + ' 样本）'
+              : '未估计') +
+           '　训练集 ' + Math.round(100 * S.gazeZone.trainAcc) + '%');
+  } else {
+    L.push('<span class="warn">尚未标定 —— 点【③ 区块标定】</span>');
+  }
+  if (S.rawZone !== undefined && S.rawZone !== null) {
+    L.push('<b>原始判决</b> ' + (S.rawZone + 1) + ' 区（置信 ' +
+           (S.rawConf||0).toFixed(2) + '）　' +
+           '<b>平滑后</b> ' + (S.curZone === null ? '—' : ('第 ' + (S.curZone+1) + ' 区')) +
+           '　<span class="dim">两者长期相同且不随视线变 → 分类器无效；' +
+           '原始判决随视线变但平滑后不动 → 平滑过强</span>');
+  }
+  if (S.calibRawAcc !== null && S.calibRawAcc !== undefined) {
+    L.push('<b>标定样本原始判决准确率</b> ' + Math.round(100 * S.calibRawAcc) +
+           '%　<span class="dim">（分类器自身是否学到东西）</span>');
+  }
+  L.push('<b>当前区块</b> ' + (S.curZone === null ? '—' : ('第 ' + (S.curZone+1) + ' 区')) +
+         '　<b>切换次数</b> ' + (S.switchCount || 0) +
+         (S.zoneVotes && S.zoneVotes.length
+            ? '　票数 ' + (() => {
+                const c = {}; S.zoneVotes.forEach(z => c[z] = (c[z]||0)+1);
+                return Object.keys(c).map(k => (Number(k)+1) + ':' + c[k]).join(' ');
+              })()
+            : ''));
+  if (tr && res) {
+    const i = res.info || {};
+    L.push('<b>状态</b> ' + res.state);
+    if (i.ratio !== undefined && i.ratio !== null) {
+      L.push('  ratio ' + i.ratio.toFixed(2) + '　base ' + (i.base||0).toFixed(1) +
+             's　最长单次 ' + (i.longest||0).toFixed(1) + 's　回看 ' + (i.revisit||0));
+      if (i.aux && i.aux.length) L.push('  辅助条件: ' + i.aux.join('、'));
+    }
+    L.push('<b>静默准备</b> [' + [...tr.prepared].map(x=>x+1).join(', ') + ']　' +
+           '<b>自动展开</b> ' + tr.reveals.length + ' 次');
+    const parts = [];
+    for (const z of S.zones) parts.push('Z' + (z.zid+1) + ':' + tr.classify(z.zid).state.slice(0,3));
+    L.push('<span class="dim">' + parts.join(' ') + '</span>');
+  } else {
+    L.push('<span class="dim">点【④ 开始阅读】后开始推断</span>');
+  }
+  if (window.__lastError) L.push('<span class="warn">' + window.__lastError + '</span>');
+  el.innerHTML = L.join('\n');
+}
+
+// ============================================================================
+//  区块标定：每个区块看一次，采集该区块对应的视线特征
+// ============================================================================
+// ============================================================================
+//  区块标定 —— 修正版
+//
+//  三个修正（对应现场"卡住 / 高亮的区不对"）：
+//    ① 标定点用【与判定完全相同的分区函数】反推区块中心
+//       原实现取"每区第一段顶部"，与判定用的 zoneGridIndex（按屏幕等分）
+//       不是一个参考系，学出来的边界整体偏移 —— 这就是"高亮的区不对"。
+//    ② 等滚动真正结束再算目标点（原实现固定等 700ms，滚动慢就错位）
+//    ③ 画一个明确的圆点，让使用者知道该看哪
+// ============================================================================
+const CAL = { active: false, idx: 0, samples: [], tStart: 0, px: 0, py: 0, phase: 'idle' };
+
+// 用与判定相同的分区函数，反推第 z 个区块的中心
+function zoneCenter(z) {
+  const cols = ZONE_COLS, rows = ZONE_ROWS;
+  const cx = z % cols, cy = Math.floor(z / cols);
+  return {
+    x: (cx + 0.5) / cols * innerWidth,
+    y: (cy + 0.5) / rows * innerHeight,
+  };
+}
+
+function startCalib() {
+  if (!S.model || !S.video) { $('status').textContent = '请先授权摄像头'; return; }
+  CAL.samples = []; CAL.idx = 0; CAL.active = true;
+  calibStep();
+}
+
+function calibStep() {
+  if (CAL.idx >= N_ZONES()) { finishCalib(); return; }
+  const z = CAL.idx;
+  // 让该区块的段落进入视野（滚动是异步的，先滚再量）
+  const per = Math.ceil(TEXT.length / N_ZONES());
+  const el = document.querySelector('.para[data-rid="' + (z * per) + '"]');
+  if (el) el.scrollIntoView({ block: 'center' });
+
+  // 等滚动结束：轮询位置，连续两次相同即认为稳定
+  let last = null, stable = 0;
+  const waitStable = () => {
+    const c = zoneCenter(z);
+    if (last && Math.abs(c.x - last.x) < 1 && Math.abs(c.y - last.y) < 1) stable++;
+    else stable = 0;
+    last = c;
+    if (stable < 2) { requestAnimationFrame(waitStable); return; }
+    CAL.px = c.x; CAL.py = c.y;
+    CAL.tStart = performance.now();
+    CAL.phase = 'collect';
+    showCenter('标定 ' + (z + 1) + '/' + N_ZONES(),
+               '看橙色圆点（' + (z === 0 ? '左侧' : '右侧') + '）', '约 1.5 秒');
+    const t0 = performance.now();
+    const collectDone = () => {
+      if (performance.now() - t0 < 1500) { requestAnimationFrame(collectDone); return; }
+      CAL.idx++; hideCenter();
+      // 段落高亮跟随当前标定区块
+      paintCalibZone(null);
+      calibStep();
+    };
+    requestAnimationFrame(collectDone);
+  };
+  requestAnimationFrame(waitStable);
+}
+
+// 标定期间高亮当前区块，并画目标圆点
+function paintCalibZone() {
+  if (!CAL.active) return;
+  for (const z of S.zones) {
+    const on = (z.zid === CAL.idx);
+    z.els.forEach(e => e.classList.toggle('inzone', on));
+  }
+}
+
+function drawCalibDot() {
+  if (!CAL.active || CAL.phase !== 'collect') return;
+  const cv = $('preview'), ctx = cv.getContext('2d');
+  ctx.save();
+  ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(CAL.px, CAL.py, 30, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(245,166,35,.9)';
+  ctx.beginPath(); ctx.arc(CAL.px, CAL.py, 11, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+//  留一交叉验证：留出【一个区块】，不是留出一个样本
+//
+//  这里修过一个错误。原实现按样本留一（302 个样本 -> 302 折），
+//  于是训练集里目标区块的样本几乎全是 0，岭回归退化为常数预测，
+//  留一准确率报出 0% —— 不是模型差，是验证写错了。
+//
+//  正确做法：按【区块】留一。2 个区块就是 2 折，
+//  每折用另一个区块的全部样本训练，再在本区块上测。
+//  这样才真正检验"没见过的区块能不能判对"。
+// ---------------------------------------------------------------------------
+function looZoneAccuracy(samples, cols, rows) {
+  const nz = cols * rows;
+  const labs = samples.map(s => zoneGridIndex(s.px, s.py, cols, rows));
+  let ok = 0, tot = 0, folds = 0;
+  for (let k = 0; k < nz; k++) {
+    const tr = [], te = [];
+    for (let i = 0; i < samples.length; i++) (labs[i] === k ? te : tr).push(samples[i]);
+    if (!te.length || tr.length < 20) continue;
+    const cl = fitGazeZoneClassifier(tr, cols, rows);
+    if (!cl) continue;
+    folds++;
+    const saved = S.gazeZone;
+    S.gazeZone = cl;
+    for (const s of te) {
+      const p = predictGazeZone(s.f);
+      tot++;
+      if (p && p.zone === zoneGridIndex(s.px, s.py, cols, rows)) ok++;
+    }
+    S.gazeZone = saved;
+  }
+  return tot ? { acc: ok / tot, n: tot, folds: folds } : null;
+}
+
+// ---------------------------------------------------------------------------
+//  特征可分性诊断 —— 直接回答"这些特征能不能区分区块"
+//
+//  为什么需要它：留一准确率 0% 只说明"分类器没学到"，不说明原因。
+//  可能是 ① 实现有 bug，也可能是 ② 特征本身不可分。
+//  这个诊断把两者分开：算"区块间距离 / 区块内离散度"，
+//  这是判别分析里的标准量（类似 Fisher 比）。
+//    > 2.0  可分性好，分类器应该能学会
+//    1.0~2.0 勉强可分
+//    < 1.0  不可分 —— 再怎么调分类器都没用
+// ---------------------------------------------------------------------------
+function featureSeparability(samples, cols, rows) {
+  const labs = samples.map(s => zoneGridIndex(s.px, s.py, cols, rows));
+  const nz = cols * rows;
+  const groups = {};
+  for (let i = 0; i < samples.length; i++) {
+    (groups[labs[i]] = groups[labs[i]] || []).push(samples[i].f);
+  }
+  const keys = Object.keys(groups).filter(k => groups[k].length >= 5);
+  if (keys.length < 2) return null;
+  const nf = samples[0].f.length;
+  const means = {}, sds = {};
+  for (const k of keys) {
+    const g = groups[k];
+    const m = [], s = [];
+    for (let j = 0; j < nf; j++) {
+      const v = g.map(a => a[j]);
+      const mu = v.reduce((x, y) => x + y, 0) / v.length;
+      const sd = Math.sqrt(v.reduce((x, y) => x + (y - mu) ** 2, 0) / v.length) || 1e-9;
+      m.push(mu); s.push(sd);
+    }
+    means[k] = m; sds[k] = s;
+  }
+  // 用任意两组的最大可分性作为整体指标
+  let best = 0, bestPair = null, perFeat = null;
+  for (let a = 0; a < keys.length; a++) {
+    for (let b = a + 1; b < keys.length; b++) {
+      const ka = keys[a], kb = keys[b];
+      let acc = 0;
+      const pf = [];
+      for (let j = 0; j < nf; j++) {
+        const d = Math.abs(means[ka][j] - means[kb][j]);
+        const sp = Math.sqrt((sds[ka][j] ** 2 + sds[kb][j] ** 2) / 2) || 1e-9;
+        const r = d / sp;
+        pf.push(r);
+        acc += r * r;
+      }
+      const sep = Math.sqrt(acc / nf);
+      if (sep > best) { best = sep; bestPair = [ka, kb]; perFeat = pf; }
+    }
+  }
+  return { sep: best, pair: bestPair, perFeat, counts: keys.map(k => k + ':' + groups[k].length) };
+}
+
+function finishCalib() {
+  CAL.active = false; CAL.phase = 'idle';
+  hideCenter();
+  paintCalibZone();
+  const cl = fitGazeZoneClassifier(CAL.samples, ZONE_COLS, ZONE_ROWS);
+  if (!cl) {
+    $('status').innerHTML = '<span style="color:#ff6b6b">标定失败（样本不足）</span>';
+    return;
+  }
+  S.gazeZone = cl;
+  // 标定后清空区块状态，避免沿用标定前的旧值
+  S.curZone = null; S.zoneVotes = []; S.candZone = null; S.candSince = 0; S.switchCount = 0;
+  S.rawZone = null; S.rawConf = 0;
+  // 留一泛化估计（可能耗时一点，但样本量小，很快）
+  const loo = looZoneAccuracy(CAL.samples, ZONE_COLS, ZONE_ROWS);
+  S.looAcc = loo ? loo.acc : null;
+  S.looN = loo ? loo.n : 0;
+  S.looFolds = loo ? loo.folds : 0;
+  // 用标定样本自身做一次"原始判决准确率"检查（平滑之前）：
+  // 若这个数很低，说明分类器本身没学到，与平滑无关。
+  {
+    const saved = S.gazeZone;
+    S.gazeZone = cl;
+    let ok = 0;
+    for (const smp of CAL.samples) {
+      const q = predictGazeZone(smp.f);
+      if (q && q.zone === zoneGridIndex(smp.px, smp.py, ZONE_COLS, ZONE_ROWS)) ok++;
+    }
+    S.calibRawAcc = CAL.samples.length ? ok / CAL.samples.length : null;
+    S.gazeZone = saved;
+  }
+  const sp = featureSeparability(CAL.samples, ZONE_COLS, ZONE_ROWS);
+  S.sep = sp;
+  const msg = '样本 ' + cl.nSamples + ' 条　泛化(留一) ' +
+    (loo ? Math.round(100 * loo.acc) + '%（' + loo.folds + ' 折）' : '样本不足') +
+    '　训练集 ' + Math.round(100 * cl.trainAcc) + '%' +
+    (sp ? '　可分性 ' + sp.sep.toFixed(2) : '');
+  $('status').textContent = '标定完成：' + msg;
+  showCenter('标定完成', (loo ? '留一泛化 ' + Math.round(100 * loo.acc) + '%' : ''),
+             msg);
+  setTimeout(hideCenter, 3600);
+}
+
+// ============================================================================
+//  初始化 / 交互
+// ============================================================================
+async function initAll() {
+  const b = $('btn-init');
+  b.disabled = true; b.textContent = '加载中…';
+  try {
+    const vision = await import(VENDOR + 'vision_bundle.js');
+    FilesetResolver = vision.FilesetResolver;
+    FaceLandmarker = vision.FaceLandmarker;
+    const fs = await FilesetResolver.forVisionTasks(VENDOR + 'wasm');
+    S.model = await FaceLandmarker.createFromOptions(fs, {
+      baseOptions: { modelAssetPath: VENDOR + 'face_landmarker.task', delegate: 'GPU' },
+      runningMode: 'VIDEO', numFaces: 1,
+      outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false,
+    });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
+    S.video = $('cam');
+    S.video.srcObject = stream;
+    await S.video.play();
+    S.video.classList.add('on');
+    ['btn-calib','btn-start','btn-export'].forEach(id => $(id).disabled = false);
+    b.textContent = '① 已就绪';
+    $('status').textContent = '模型与摄像头就绪';
+    requestAnimationFrame(loop);
+  } catch (e) {
+    b.disabled = false; b.textContent = '① 重试';
+    $('status').innerHTML = '<span style="color:#ff6b6b">失败: ' + e.message + '</span>';
+  }
+}
+
+function startReading() {
+  if (!S.gazeZone) { $('status').textContent = '请先做区块标定'; return; }
+  buildLayout();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    S.tracker = new Tracker(S.zones.map(z => ({ zid: z.zid, chars: z.chars, els: z.els })));
+    S.active = true; S.zoneVotes = [];
+    S.curZone = null; S.candZone = null; S.candSince = 0; S.switchCount = 0;
+    // 标定时 scrollIntoView 会把页面滚到标定位置，开始阅读必须滚回顶部，
+    // 否则读者会从中间开始（现场反馈："点开始阅读能直接从头开始吗"）。
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    $('status').textContent = '阅读中';
+    showCenter('开始阅读', '读到卡住的地方按空格标注', '这是真值，用于对照系统的判断');
+    setTimeout(hideCenter, 2600);
+  }));
+}
+
+const marked = new Set();
+function toggleMark() {
+  if (!S.tracker || S.curZone === null) return;
+  const z = S.zones.find(v => v.zid === S.curZone);
+  if (!z) return;
+  const rid = z.paras[Math.floor(z.paras.length / 2)];
+  const el = document.querySelector('.para[data-rid="' + rid + '"]');
+  if (marked.has(S.curZone)) {
+    marked.delete(S.curZone);
+    z.els.forEach(e => e.classList.remove('mark'));
+  } else {
+    marked.add(S.curZone);
+    z.els.forEach(e => e.classList.add('mark'));
+  }
+  $('status').textContent = '已标注 ' + marked.size + ' 个区块';
+}
+
+function exportData() {
+  const tr = S.tracker;
+  if (!tr) { alert('还没有数据'); return; }
+  const rows = [['zid','chars','base_s','dwell_s','ratio','revisit','longest_s',
+                 'state','prepared','marked']];
+  for (const z of S.zones) {
+    const c = tr.classify(z.zid), i = c.info || {};
+    rows.push([z.zid, z.chars, (i.base||0).toFixed(2), (i.effort||0).toFixed(2),
+               (i.ratio===null||i.ratio===undefined)?'':i.ratio.toFixed(3),
+               i.revisit||0, (i.longest||0).toFixed(2), c.state,
+               tr.prepared.has(z.zid)?1:0, marked.has(z.zid)?1:0]);
+  }
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'reader_zones_states.csv';
+  document.body.appendChild(a); a.click();
+  setTimeout(() => document.body.removeChild(a), 100);
+  $('status').textContent = '已导出 reader_zones_states.csv';
+}
+
+function showCenter(l1, l2, l3) {
+  const c = $('center');
+  c.querySelector('.l1').textContent = l1 || '';
+  c.querySelector('.l2').textContent = l2 || '';
+  c.querySelector('.l3').textContent = l3 || '';
+  c.classList.add('on');
+}
+function hideCenter() { $('center').classList.remove('on'); }
+
+$('btn-init').onclick = () => { try { initAll(); } catch(e){ window.__lastError = e.message; } };
+$('btn-fs').onclick = async () => {
+  try {
+    if (!document.fullscreenElement) await $('stage').requestFullscreen();
+    else await document.exitFullscreen();
+    setTimeout(() => { buildLayout(); if (S.tracker) S.tracker.zones = S.zones; }, 350);
+  } catch (e) { $('status').textContent = '全屏失败: ' + e.message; }
+};
+$('btn-calib').onclick = () => startCalib();
+$('btn-start').onclick = () => startReading();
+$('btn-hud').onclick = () => $('hud').classList.toggle('on');
+// 区块数切换：2 -> 3 -> 段落数 -> 2 循环。改完必须重新标定。
+$('btn-zones').onclick = () => {
+  // 注意：正文是【两栏】布局，区块必须等于栏数（2）。
+  // 早先允许切到 3/4，结果区块数与两栏对不上，
+  // 标定按 4 区划分而界面上只有 2 栏 —— 判定与视觉完全对不上。
+  // 所以这里只保留 2。/ 若将来改成 3 栏布局，再放开对应取值。
+  if (ZONE_COLS === 2 && ZONE_ROWS === 1) {
+    $('status').innerHTML = '<span style="color:#f5a623">' +
+      '正文是两栏布局，区块数固定为 2（与栏数一致）</span>';
+    return;
+  }
+  const nparas = TEXT.length;
+  const seq = [2, 3, nparas];
+  const cur = ZONE_ROWS;
+  let i = seq.indexOf(cur);
+  i = (i < 0) ? 0 : (i + 1) % seq.length;
+  ZONE_ROWS = seq[i];
+  S.gazeZone = null; S.curZone = null; S.zoneVotes = []; S.looAcc = null;
+  S.candZone = null; S.candSince = 0; S.switchCount = 0;
+  if (S.tracker) S.tracker.cur = null;
+  buildLayout();
+  $('btn-zones').textContent = '区块: ' + ZONE_ROWS;
+  $('status').innerHTML = '<span style="color:#f5a623">已切到 ' + ZONE_ROWS +
+    ' 区，请重新点【③ 区块标定】</span>';
+};
+$('btn-export').onclick = () => exportData();
+
+addEventListener('keydown', (e) => {
+  if (e.key === ' ') { e.preventDefault(); toggleMark(); return; }
+  if (e.key === 'h' || e.key === 'H') { $('hud').classList.toggle('on'); return; }
+  if (e.key === 'd' || e.key === 'D') { exportData(); return; }
+});
+addEventListener('resize', () => { buildLayout(); if (S.tracker) S.tracker.zones = S.zones; });
+
+buildLayout();
+</script>
+</body>
+</html>

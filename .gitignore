@@ -1,0 +1,28 @@
+# 打包产物
+build/
+*.zip
+
+# 快照（工作用的，不进仓库）
+.snapshots/
+
+# 眼动阶段的原始数据与模型（体积大，且阅读扩展用不到）
+data/
+model.json
+gaze_*.csv
+gaze_*.png
+gaze_*.zip
+eyetrax_result.json
+
+# 第三方大件（MediaPipe 等）
+vendor/
+
+# 一次性补丁脚本
+tools/patches/
+
+# 系统 / 编辑器
+__pycache__/
+.venv/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

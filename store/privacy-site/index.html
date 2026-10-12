@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>隐私政策 · 按句读（阅读辅助）</title>
+<meta name="description" content="按句读（阅读辅助）浏览器扩展的隐私政策：不收集任何个人数据，内容只在用户主动求助时发给他自己配置的 AI 服务。">
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --line:#262b36;
+    --fg:#e6e8ee; --dim:#9aa0a6; --accent:#5b8def; --ok:#4ade80;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.8 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  main { max-width:780px; margin:0 auto; padding:48px 22px 96px; }
+
+  header { margin-bottom:36px; }
+  h1 { font-size:28px; margin:0 0 10px; letter-spacing:-.01em; }
+  .meta { color:var(--dim); font-size:13.5px; }
+
+  .lead {
+    background:#141b29; border-left:3px solid var(--accent);
+    padding:16px 20px; border-radius:0 8px 8px 0; margin:0 0 34px;
+    font-size:16.5px;
+  }
+  .lead strong { color:#fff; }
+
+  h2 {
+    font-size:19px; margin:40px 0 12px; padding-top:18px;
+    border-top:1px solid var(--line);
+  }
+  h2:first-of-type { border-top:0; padding-top:0; }
+  h3 { font-size:15.5px; margin:24px 0 8px; color:#cdd3dc; }
+
+  p, li { color:#d3d7de; }
+  ul { padding-left:22px; }
+  li { margin:5px 0; }
+
+  code {
+    background:#1a1f2a; padding:2px 6px; border-radius:4px;
+    color:#9ecbff; font:13.5px/1 ui-monospace,Consolas,monospace;
+  }
+
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14.5px; }
+  th, td { border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top; }
+  th { background:var(--panel); color:#cdd3dc; font-weight:600; }
+  td strong { color:#fff; }
+
+  .yes { color:var(--ok); font-weight:600; }
+  .no  { color:#f5a623; font-weight:600; }
+
+  .note {
+    background:#1a1f2a; border-radius:8px; padding:14px 18px;
+    margin:18px 0; font-size:14.5px; color:#c3c9d2;
+  }
+
+  footer {
+    margin-top:56px; padding-top:20px; border-top:1px solid var(--line);
+    color:var(--dim); font-size:13.5px; line-height:1.9;
+  }
+  footer strong { color:#c3c9d2; }
+  a { color:var(--accent); }
+
+  @media (max-width:600px) {
+    main { padding:32px 18px 64px; }
+    h1 { font-size:23px; }
+    table { font-size:13.5px; }
+    th, td { padding:7px 9px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>隐私政策 · 按句读（阅读辅助）</h1>
+  <div class="meta">最后更新：2026-10-10　·　适用版本：1.0.0 及以上</div>
+</header>
+
+<div class="lead">
+  <strong>这个扩展不收集、不上传、不存储你的任何个人数据。</strong><br>
+  它唯一会「往外发」的东西，是你主动按空格求助时<strong>那一句话的正文</strong> ——
+  而且只发给你自己配置的那个 AI 服务，不经过我们。
+</div>
+
+<h2>1. 我们不收集什么</h2>
+<ul>
+  <li>不收集浏览历史</li>
+  <li>不收集账号、邮箱、手机号</li>
+  <li>不收集设备信息、位置</li>
+  <li>不埋点、不做统计、不做 A/B 测试</li>
+  <li>没有自己的服务器，所以也没有「数据传回我们这里」这回事</li>
+</ul>
+
+<h2>2. 扩展会读到什么</h2>
+<p>为了把文章按句切开并高亮，扩展需要在网页上读取<strong>正文文字</strong>。</p>
+<ul>
+  <li>读到的内容<strong>只在本机内存里用</strong>：切句、计算阅读进度、在原文上高亮</li>
+  <li>不写入任何远程位置</li>
+  <li>关闭页面即消失</li>
+</ul>
+<p>如果网页是 PDF，扩展会用内置的 pdf.js 解析<strong>你自己打开的那个 PDF</strong>，同样只在本机处理。</p>
+
+<h2>3. 什么情况下内容会离开你的电脑</h2>
+<p><strong>只有一种：你按了空格（或点了「讲解」）。</strong></p>
+<p>这时扩展会把<strong>当前那一句</strong>、以及紧邻的少量上下文，发给你在「API 设置」里选择的 AI 服务。
+发给谁取决于你选哪一个：</p>
+
+<table>
+  <tr><th>你选的后端</th><th>内容发到哪里</th><th>说明</th></tr>
+  <tr>
+    <td><strong>浏览器内置模型</strong>（默认）</td>
+    <td class="yes">不发出去</td>
+    <td>模型跑在你本机，内容不出电脑</td>
+  </tr>
+  <tr>
+    <td><strong>本地 Ollama</strong></td>
+    <td class="yes">本机服务</td>
+    <td>发到 <code>localhost</code>，内容不出电脑</td>
+  </tr>
+  <tr>
+    <td><strong>云端 API</strong>（你自填 key）</td>
+    <td class="no">该服务商的服务器</td>
+    <td>受该服务商自己的隐私政策约束</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>我们不经手这些内容。</strong>
+  扩展直连你配置的服务，中间没有我们的服务器 ——
+  也没法经手，因为这个扩展没有后端。
+</div>
+
+<h2>4. 术语译名查证</h2>
+<p>扩展会为句子里的专业术语查询 <strong>Wikipedia</strong>，以获取标准中文译名。</p>
+<ul>
+  <li>只发送<strong>术语本身</strong>（例如 <code>computer vision</code>），<strong>不发送句子、不发送上下文</strong></li>
+  <li>用的是 Wikipedia 公开 API，不需要登录，不携带任何标识</li>
+  <li>查不到就如实显示「没有查到」，<strong>不会编一个译名给你</strong></li>
+</ul>
+
+<h2>5. 本地保存了什么</h2>
+<p>以下内容存在你自己浏览器的本地存储里，<strong>不会上传</strong>：</p>
+<table>
+  <tr><th>存了什么</th><th>用途</th><th>怎么清除</th></tr>
+  <tr><td>API key / 后端地址</td><td>记住你的配置</td><td>「API 设置」里清空</td></tr>
+  <tr><td>你的术语表</td><td>记住你订正过的译名</td><td>同上</td></tr>
+  <tr><td>阅读速度基线</td><td>估算每句该给多少时间</td><td>重置浏览器配置即消失</td></tr>
+  <tr><td>已读标记</td><td>记住哪句你标了「已懂」</td><td>同上</td></tr>
+</table>
+<p><strong>卸载扩展即全部删除。</strong></p>
+
+<h2>6. 权限说明</h2>
+<table>
+  <tr><th>权限</th><th>为什么需要</th></tr>
+  <tr>
+    <td><code>host_permissions</code><br>（全部站点）</td>
+    <td>阅读辅助的作用对象是「你正在读的那篇文章」，而文章可能在任何网站上 ——
+        论文在出版商站点、预印本在 arXiv、课程材料在学校内网、技术文章在个人博客。
+        扩展无法预知你会打开哪个网站，所以只能声明全部站点。<br><br>
+        <strong>但声明不等于会读</strong>：扩展不注册任何自动注入规则，
+        不点图标它在任何页面上都不会运行；只有你主动点击时，
+        才把脚本注入到<strong>当前那一个标签页</strong>。</td>
+  </tr>
+  <tr><td><code>scripting</code></td><td>把切句与高亮脚本注入到你指定的页面</td></tr>
+  <tr><td><code>tabs</code></td><td>判断当前标签页是不是可读的网页；侧栏模式下找到你想读的那个标签页</td></tr>
+  <tr><td><code>activeTab</code></td><td>你点击图标时临时获得当前页访问权</td></tr>
+  <tr><td><code>sidePanel</code></td><td>在浏览器侧栏里显示讲解</td></tr>
+</table>
+<p><strong>没有申请</strong>：<code>storage</code>、<code>history</code>、<code>bookmarks</code>、
+<code>cookies</code>、<code>webRequest</code>、<code>downloads</code> 等任何与阅读无关的权限。</p>
+
+<h2>7. 儿童</h2>
+<p>本扩展不面向儿童，也不收集任何年龄相关信息。</p>
+
+<h2>8. 变更</h2>
+<p>如果这份政策有实质变更，会更新顶部的日期，并在扩展的更新说明里写明。</p>
+
+<h2>联系方式</h2>
+<p>任何问题、疑问或数据相关的请求，请通过
+<a href="https://github.com/guizhouxiemeng/sentence-reader-privacy/issues">该项目的 issue 页面</a> 联系我们。</p>
+
+<footer>
+  本页最后更新：2026-10-10
+</footer>
+
+</main>
+</body>
+</html>

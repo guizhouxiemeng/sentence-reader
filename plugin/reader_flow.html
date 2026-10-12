@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<!-- 本文件由 tools/sync_plugin.py 从 demo/reader_flow.html 同步生成。
+     要改动请改 demo/reader_flow.html，然后重新运行同步脚本。 -->
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自适应阅读辅助 · 原型</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --fg: #e6e8ee; --dim: #9aa0a6; --accent: #4ade80;
+    --hi: #2a3550; --hi-border: #5b8def; --warn: #f5a623;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.75 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+
+  /* ---------- 顶部工具条 ---------- */
+  #bar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 8px 12px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 10;
+  }
+  /* 进度条绝对定位在 #bar 下沿。
+     不需要给 #bar 额外加 position —— 它本来就是 sticky，
+     而 sticky 会建立定位上下文，绝对定位的子元素以它为参照。
+     （我一开始加了两行 position 覆盖，反而把 sticky 弄没了。） */
+  button {
+    background: #222834; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 11px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: #2b3342; }
+  button.on { background: var(--hi-border); border-color: var(--hi-border); color: #06101f; font-weight: 600; }
+  .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  #stat { color: var(--dim); font-size: 12.5px; margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  /* ---------- 阅读进度条 ---------- */
+  /*  贴在工具栏下沿：不占高度、一直可见、长度就是"读到哪了"。
+      为什么不做成滑块：那是"跳到哪"，而这里要表达的是"读了多少"。 */
+  #prog {
+    position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+    background: transparent; pointer-events: none;
+  }
+  #prog i {
+    display: block; height: 100%; width: 0;
+    background: var(--hi-border); transition: width .2s ease-out;
+  }
+  #prog i.done { background: #4ade80; }
+
+  /* ---------- 主体：左阅读区 / 右侧栏 ---------- */
+  #main { flex: 1; display: flex; min-height: 0; }
+  #left { flex: 1; overflow: auto; padding: 40px 8vw 45vh; }
+  #right {
+    width: 400px; min-width: 300px; border-left: 1px solid var(--line);
+    background: var(--panel); display: flex; flex-direction: column;
+  }
+  #right.hide { display: none; }
+
+  /* ---------- 输入面板 ---------- */
+  #setup { max-width: 760px; margin: 0 auto; }
+  #setup h1 { font-size: 19px; margin: 0 0 6px; }
+  #setup p { color: var(--dim); font-size: 13.5px; margin: 0 0 16px; }
+  textarea {
+    width: 100%; height: 300px; background: #12151c; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    font: 13.5px/1.7 "Consolas", "Microsoft YaHei", monospace; resize: vertical;
+  }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  label { font-size: 13px; color: var(--dim); }
+
+  /* ---------- 正文与句子 ---------- */
+  /* 保留原文段落结构：每个 <p> 是一段，段内每句是一个内联 <span> */
+  #doc { max-width: 780px; margin: 0 auto; }
+  #doc p {
+    margin: 0 0 1.15em; text-indent: 2em; line-height: 1.9;
+    font-size: 16px; color: var(--fg);
+  }
+  #doc p.title { font-size: 22px; font-weight: 600; text-indent: 0;
+                 margin-bottom: 1.4em; line-height: 1.5; }
+  /* 句：内联元素，不破坏段落与文字流 */
+  .s {
+    transition: background .16s, color .16s, box-shadow .16s;
+    border-radius: 3px; padding: 1px 2px; cursor: pointer;
+  }
+  .s:hover { background: #1b1f28; }
+  /* 当前句：用底色 + 左侧细线，而不是整块替换 —— 保持阅读连贯 */
+  .s.cur {
+    background: var(--hi);
+    box-shadow: inset 3px 0 0 0 var(--hi-border);
+    color: #fff;
+  }
+  .s.known { opacity: .45; }
+  /* 系统已在后台为这句备好讲解（用户没求助，所以不弹出来）——
+     用点线让后台动作看得见，否则"静默准备"完全是黑箱。 */
+  .s.prepped { border-bottom: 2px dotted rgba(74,222,128,.65); }
+  /* 人工标注的真值（评估用，与系统判定无关） */
+  .s.truth-hard { box-shadow: inset -3px 0 0 0 #ff6b6b; }
+  .s.truth-ok   { box-shadow: inset -3px 0 0 0 #4ade80; }
+  .s.done { color: var(--dim); }
+  /* 已求助过的句子：加下划波浪线，便于回看 */
+  .s.asked { border-bottom: 2px solid rgba(245,166,35,.55); }
+
+  /* ---------- 侧栏 ---------- */
+  #rhead {
+    padding: 10px 14px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px;
+  }
+  #rhead b { font-size: 13.5px; }
+  #rhead button { margin-left: auto; padding: 4px 9px; font-size: 12px; }
+  #cards { flex: 1; overflow: auto; padding: 12px; }
+  .card {
+    background: #12151c; border: 1px solid var(--line); border-left: 3px solid var(--warn);
+    border-radius: 6px; padding: 10px 12px; margin-bottom: 10px;
+  }
+  .card .idx { color: var(--warn); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
+  .card .src {
+    color: var(--dim); font-size: 12.5px; margin: 5px 0 8px;
+    padding-left: 8px; border-left: 2px solid var(--line);
+  }
+  .card .body { font-size: 13.5px; white-space: pre-wrap; }
+  .card .body.loading { color: var(--dim); font-style: italic; }
+  .empty { color: var(--dim); font-size: 13px; text-align: center; padding: 30px 10px; }
+
+  /* ---------- 设置弹层 ---------- */
+  #cfg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+  }
+  #cfg.on { display: flex; }
+  #cfgbox {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px; width: 520px; max-width: 92vw;
+  }
+  #cfgbox h2 { margin: 0 0 4px; font-size: 16px; }
+  #cfgbox .hint { color: var(--dim); font-size: 12.5px; margin: 0 0 16px; }
+  #cfgbox input, #cfgbox select {
+    width: 100%; background: #12151c; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; font-size: 13.5px; margin-bottom: 12px;
+  }
+  kbd {
+    background: #222834; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 5px; font: 12px monospace;
+  }
+  /* ---- 讲解卡片的术语来源标记（可信改造） ---- */
+  #cards .sec { color:#9aa0a6; font-size:12px; margin:9px 0 3px; letter-spacing:.5px; }
+  #cards .ln  { margin:2px 0; line-height:1.65; }
+  #cards .gap { height:5px; }
+  #cards .term {
+    display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 6px;
+    margin:3px 0; line-height:1.6;
+  }
+  #cards .term .en  { color:#cfe3ff; font-family:Consolas,Menlo,monospace; font-size:12.5px; }
+  #cards .term .zh  { color:#e6e8ee; }
+  #cards .term .badge {
+    font-size:11px; padding:0 5px; border-radius:9px; white-space:nowrap;
+    border:1px solid transparent;
+  }
+  #cards .term .badge.ok   { color:#4ade80; border-color:rgba(74,222,128,.4); background:rgba(74,222,128,.10); }
+  #cards .term .badge.warn { color:#fbbf24; border-color:rgba(251,191,36,.45); background:rgba(251,191,36,.10); }
+  #cards .term .fix {
+    font-size:11px; padding:0 6px; border-radius:5px; cursor:pointer;
+    background:#222834; color:#9aa0a6; border:1px solid #2a3140;
+  }
+  #cards .term .fix:hover { color:#e6e8ee; border-color:#3a4557; }
+  #cards .card .idx .regen {
+    float:right; font-size:13px; line-height:1; padding:1px 6px 2px;
+    border-radius:5px; cursor:pointer; background:transparent;
+    color:#9aa0a6; border:1px solid #2a3140;
+  }
+  #cards .card .idx .regen:hover { color:#e6e8ee; border-color:#3a4557; }
+  #cards .card .idx .regen:disabled { opacity:.5; cursor:default; }
+  /* 新手引导条：只在后端不可用时出现 */
+  #onboard {
+    display:none; margin:0 0 10px; padding:9px 11px; border-radius:7px;
+    background:#2a2418; border:1px solid #5a4a24; color:#e8dcc0;
+    font-size:13px; line-height:1.6;
+  }
+  #onboard.on { display:block; }
+  #onboard b { color:#f5c451; }
+  #onboard code {
+    background:#1a1f2a; padding:1px 5px; border-radius:4px;
+    color:#9ecbff; font-size:12px;
+  }
+  #onboard .row { margin-top:7px; display:flex; gap:8px; flex-wrap:wrap; }
+  #onboard button { font-size:12px; padding:3px 10px; }
+  #onboard .hint { color:#a99b78; font-size:12px; margin-top:5px; }
+  #cards .srcstat { margin-top:7px; padding-top:6px; border-top:1px solid #232a36;
+                    color:#9aa0a6; font-size:11.5px; }
+  #cards .srcstat.warn { color:#fbbf24; }
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <button id="btnStart">开始</button>
+  <button id="btnPlay">暂停</button>
+  <button id="btnMode" title="自动：系统按句长推进（推断只用操作信号）&#10;手动：你按 → 翻句（推断用真实停留时长）">自动模式</button>
+  <div class="sep"></div>
+  <button id="btnPrev" title="上一句 ←">◀ 上句</button>
+  <button id="btnNext" title="下一句 →">下句 ▶</button>
+  <div class="sep"></div>
+  <label>阅读速度
+    <input id="speed" type="range" min="2" max="15" step="0.2" value="5"
+           style="vertical-align:middle;width:130px">
+    <span id="speedVal" style="color:var(--fg);font-variant-numeric:tabular-nums">5.0</span> 单位/秒
+  </label>
+  <div class="sep"></div>
+  <button id="btnKnow" title="标记这句已懂">标记已懂</button>
+  <button id="btnRemeasure" title="清除已记住的阅读速度，重新从你的实际阅读中测定">重新测速</button>
+  <button id="btnCloseOverlay" title="关闭阅读浮层" style="display:none">关闭</button>
+  <button id="btnCfg">API 设置</button>
+  <button id="btnExport">导出</button>
+  <button id="btnSide" class="on">侧栏</button>
+  <span id="modeTag" title="版本号"
+        style="font:11px/1 Consolas,monospace;padding:3px 6px;border-radius:4px;
+               border:1px solid var(--line);color:var(--dim);white-space:nowrap"></span>
+  <span id="stat"></span>
+  <div id="prog" aria-hidden="true"><i></i></div>
+</div>
+
+<div id="main">
+  <div id="left">
+    <div id="setup">
+      <h1>自适应阅读辅助 · 原型</h1>
+      <p>
+        粘贴一段文本，按句高亮推进。<kbd>空格</kbd> 暂停并把当前句送去讲解（自动带上前后文）。
+        <kbd>←</kbd><kbd>→</kbd> 手动翻句，<kbd>↑</kbd><kbd>↓</kbd> 调速度。
+      </p>
+      <textarea id="input" placeholder="把要读的文本粘贴到这里……（中文按 。！？； 切句，英文按 .!? 切句）"></textarea>
+      <div class="row">
+        <button id="btnLoad">载入示例文本</button>
+        <button id="btnFile">打开本地文件</button>
+        <span style="color:var(--dim);font-size:12.5px" id="loadMsg"></span>
+      </div>
+      <div class="row">
+        <input id="url" placeholder="粘贴文章网址，回车抓取正文（部分网站会拒绝跨域请求）"
+               style="flex:1;min-width:320px;background:#12151c;color:var(--fg);
+                      border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:13px">
+        <button id="btnUrl">抓取网址</button>
+      </div>
+      <input type="file" id="file" accept=".txt,.md,.markdown,.html,.htm,text/*" style="display:none">
+    </div>
+    <div id="doc" style="display:none"></div>
+  </div>
+
+  <div id="right">
+    <div id="rhead">
+      <b>讲解</b>
+      <span style="color:var(--dim);font-size:12px" id="cardN">0 条</span>
+      <button id="btnClear">清空</button>
+      <button id="btnExportCards" title="把当前所有讲解导出成 Markdown（可直接贴进笔记软件）">导出讲解</button>
+    </div>
+    <div id="onboard">
+      <b id="obTitle">还不能讲解</b>
+      <div class="row">
+        <button id="obDl" style="display:none">开始下载</button>
+        <button id="obCfg">打开 API 设置</button>
+        <button id="obHow">怎么做</button>
+        <button id="obRetry">重新检测</button>
+      </div>
+      <div class="hint" id="obDetail"></div>
+    </div>
+    <div id="cards"><div class="empty">按 <kbd>空格</kbd> 讲解当前句<br>讲解会出现在这里</div></div>
+  </div>
+</div>
+
+<div id="cfg">
+  <div id="cfgbox">
+    <h2>API 设置（自带 key）</h2>
+    <p class="hint">
+      key 只保存在本机浏览器（localStorage），不会上传到任何服务器。
+      留空则使用<b>占位讲解</b>，用于验证界面与触发逻辑。
+    </p>
+    <label>后端</label>
+    <select id="cfgProvider"></select>
+    <p id="cfgNote" class="hint" style="margin:3px 0 8px;line-height:1.5"></p>
+
+    <label>API Key <span id="cfgKeyReq" style="font-weight:400"></span></label>
+    <input id="cfgKey" type="password" placeholder="sk-...">
+    <p id="cfgKeyHelp" class="hint" style="margin:3px 0 8px"></p>
+
+    <label>模型名（留空用该后端的默认模型）</label>
+    <input id="cfgModel" list="cfgModelList" placeholder="留空则用默认">
+    <datalist id="cfgModelList"></datalist>
+
+    <label>我的术语表（可选 · 一行一条 · 英文 = 中文）</label>
+    <textarea id="cfgTerms" rows="4" placeholder="例如：&#10;panorama stitching = 全景拼接&#10;transformer = 变换器&#10;（以 # 开头的行会被忽略）"
+      style="width:100%;box-sizing:border-box;background:#171b23;color:#e6e8ee;border:1px solid #2a3140;border-radius:6px;padding:6px 8px;font:12.5px/1.5 Consolas,monospace;resize:vertical"></textarea>
+    <p class="hint" style="margin:3px 0 8px">填了就以你的为准（优先于在线词典）。
+      术语默认以「英文原词（中文解释）」给出，不会自编译名；
+      你想要标准译名时，把常用的几条填在这里最省事。</p>
+
+    <label>自定义 Base URL（仅选「自定义」时启用）</label>
+    <input id="cfgBase" placeholder="https://your-host/v1/chat/completions">
+
+    <div class="row" style="margin-top:8px">
+      <button id="btnCfgTest">测试连接</button>
+      <button id="btnCfgDiag">检测可用后端</button>
+      <button id="btnCfgSave">保存</button>
+      <button id="btnCfgClose">关闭</button>
+    </div>
+    <p id="cfgMsg" style="color:var(--accent);font-size:12.5px;margin:6px 0 0;line-height:1.5"></p>
+    <!-- 后端状态：改完后端立刻能看到好不好使，不用关掉面板再试。
+         也是"一个人测新手引导"的入口 —— 切到任意云端后端并清空 key，
+         保存后引导条就会出现。 -->
+    <div id="cfgStatusRow" style="margin:9px 0 0;padding-top:8px;border-top:1px solid var(--line)">
+      <span style="color:var(--dim);font-size:12.5px">后端状态：</span>
+      <span id="cfgStatus" style="font-size:12.5px">检测中…</span>
+    </div>
+  </div>
+</div>
+
+<script src="reader_flow.js"></script>
+</body>
+</html>

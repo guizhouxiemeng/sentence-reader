@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_appName__",
+  "version": "1.0.0",
+  "default_locale": "zh_CN",
+  "description": "__MSG_appDescription__",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "permissions": [
+    "scripting",
+    "tabs",
+    "activeTab",
+    "sidePanel"
+  ],
+
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "__MSG_actionTitle__"
+  },
+
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "reader_flow.html",
+        "reader_flow.js",
+        "vendor/pdf/pdf.mjs",
+        "vendor/pdf/pdf.worker.mjs"
+      ],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ]
+}

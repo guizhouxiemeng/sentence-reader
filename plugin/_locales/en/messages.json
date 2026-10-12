@@ -1,0 +1,14 @@
+{
+  "appName": {
+    "message": "Sentence Reader",
+    "description": "Extension name, shown in the extensions page and the store"
+  },
+  "appDescription": {
+    "message": "Highlights articles and PDFs by sentence. Press Space for an in-place explanation. Terms are externally verified, never invented.",
+    "description": "Short description. HARD LIMIT 132 chars for Chrome (Edge allows 190) -- keep it under 132 so one package works on both stores."
+  },
+  "actionTitle": {
+    "message": "Start reading assistance on this page",
+    "description": "Tooltip when hovering the toolbar icon"
+  }
+}

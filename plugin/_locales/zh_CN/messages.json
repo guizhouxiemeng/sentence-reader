@@ -1,0 +1,14 @@
+{
+  "appName": {
+    "message": "按句读 · 阅读辅助",
+    "description": "扩展名称，显示在扩展管理页与商店里"
+  },
+  "appDescription": {
+    "message": "按句高亮网页与 PDF，读不懂按空格就地讲解。术语译名只采用外部查证结果，查不到就如实说明。",
+    "description": "一句话简介，出现在扩展管理页与商店搜索结果里"
+  },
+  "actionTitle": {
+    "message": "在页面上开启阅读辅助",
+    "description": "鼠标悬停在工具栏图标上时的提示"
+  }
+}

@@ -1,0 +1,81 @@
+The most common stall when reading a paper is this: you know every word, but you cannot tell what the sentence is saying. Once that sentence is lost, the rest of the argument is lost with it.
+
+This extension solves that one thing.
+
+LANGUAGE NOTE
+
+Explanations are written in Chinese. This tool is built for Chinese readers working through English papers. It is not an English-language reading assistant — if you are looking for explanations in English, this extension is not for you.
+
+WHAT IT DOES
+
+- Splits the article into sentences and highlights them one at a time — works on web pages and PDFs
+- When you hit a sentence you do not understand, press Space
+- It explains that single sentence in place: what the main clause is, what the technical terms mean, where the structure is difficult
+- The explanation appears in the side panel while the article stays highlighted — no switching back and forth
+
+HOW TO USE (keyboard)
+
+- Space — explain the current sentence (context is included automatically)
+- Left / Right — previous / next sentence
+- Up / Down — adjust reading speed in 0.5 steps, range 2-15 (Up = slower)
+- H — show / hide the explanation panel
+- 0 — forget the learned reading speed and measure it again
+
+ON SCREEN
+
+- Start / Pause — controls for automatic advance
+- Auto mode — when on, it advances at your measured pace; when off, you turn sentences yourself
+- "重新测速" (re-measure) — clears the learned speed and measures it again from your actual reading. While you read the first few sentences it estimates your pace, then allocates time to each sentence from that estimate.
+- "标记已懂" (mark as understood) — marks this sentence as read; it will no longer be prepared in advance
+- Reading speed slider — 2 to 15 units per second. One unit is one Chinese character or one English word; spaces and punctuation are not counted.
+- The refresh icon on a card — regenerate that explanation (the built-in model gives a different result each time, so it is worth trying a few times)
+- Drag the panel's left edge — resize the panel
+- "导出讲解" (export) — saves everything explained so far as a single Markdown file, ready to paste into a notes app
+- "API 设置" (settings) — switch backend, enter a key, keep your own glossary (yours always wins)
+- The thin line in the toolbar — reading progress
+
+ABOUT THE SPEED
+
+You do not have to get it right at the start. The extension measures your pace while you read; whenever it feels too fast or too slow, press Up/Down and it re-learns. To start over, press 0 or click "重新测速".
+
+WHAT IT DELIBERATELY DOES NOT DO
+
+Many AI reading tools will confidently hand you an explanation before you even ask. The problem is that you have no way to tell whether that was what the paper meant, or something the model made up.
+
+So this extension deliberately does less in a few places:
+
+- Term translations come only from external sources (your own glossary first, then Wikipedia). If nothing is found, it gives you the original English term and a plain-language description — it will not invent a Chinese name for you.
+- Any "term = translation" line the model produces on its own is discarded. In testing it produced things like "OpenCV = 奥克拉夫视网膜", which is not a thing.
+- When it is unsure, it is allowed to write "I am not certain about this sentence."
+- Every term is labelled with its source: your glossary / external verification.
+
+WHERE THE EXPLANATION COMES FROM (three backends, your choice)
+
+1. Browser built-in model (default; free; nothing leaves your machine)
+   Requires Edge or Chrome 138+ with the experimental feature enabled.
+   If it is not enabled, the side panel shows you how to turn it on instead of just failing.
+
+2. Local Ollama (free; nothing leaves your machine)
+
+3. Any OpenAI-compatible cloud API (bring your own key; faster and stronger)
+   The sentence is sent to the provider you choose. The extension itself never handles it.
+
+PRIVACY
+
+No personal data is collected. There is no server of ours.
+Only when you press Space is the current sentence sent to the service you configured yourself.
+Term lookups send the term string only — never the sentence.
+
+Full privacy policy: https://guizhouxiemeng.github.io/sentence-reader-privacy/
+
+WHO IT IS FOR
+
+- Students and researchers reading English papers
+- Anyone reading Chinese literature who keeps getting stuck on terminology
+- Anyone who does not believe "the AI said so, so it must be true"
+
+KNOWN LIMITATIONS
+
+- Scanned PDFs (images only) cannot be read; the extension says so clearly
+- The browser built-in model is small; press the refresh button on a card to regenerate, and you will get a different result
+- The free path depends on an experimental browser feature, which the vendor may change at any time

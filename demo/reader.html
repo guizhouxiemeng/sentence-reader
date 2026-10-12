@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>阅读器 · 认知状态推断层验证</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; height:100%; background:#0f1115;
+    color:#e8eaed; font-family:"Microsoft YaHei",-apple-system,Segoe UI,sans-serif; }
+  #stage { position:relative; width:100vw; height:100vh; overflow:hidden; }
+
+  /* ---- 正文 ---- */
+  #paper { position:absolute; left:50%; top:0; transform:translateX(-50%);
+    width:min(900px, 74vw); padding:48px 0 120px; }
+  h1 { font-size:26px; margin:0 0 8px; font-weight:700; }
+  .sub { color:#9aa0a6; font-size:14px; margin-bottom:28px; }
+  .para { position:relative; font-size:18px; line-height:1.85; margin:0 0 26px;
+    padding:10px 14px; border-radius:8px; border-left:3px solid transparent;
+    transition:background .12s, border-color .12s; }
+  /* 状态着色：让使用者能直接看到推断结果 */
+  .para.gaze   { background:rgba(96,165,250,.10); border-left-color:#60a5fa; }
+  .para.prep   { background:rgba(245,166,35,.10); border-left-color:#f5a623; }
+  .para.block  { background:rgba(255,107,107,.14); border-left-color:#ff6b6b; }
+  .para.mark   { outline:2px solid #4ade80; outline-offset:2px; }  /* 人工标注 */
+  .para .tag { position:absolute; right:-4px; top:8px; font-size:12px; color:#9aa0a6; }
+
+  /* ---- UI ---- */
+  #topbar { position:fixed; left:50%; top:12px; transform:translateX(-50%);
+    z-index:30; display:flex; gap:10px; align-items:center;
+    background:rgba(22,26,33,.96); border:1px solid #2b3240; border-radius:10px;
+    padding:8px 12px; font-size:13px; }
+  #topbar button { background:#262c38; color:#e8eaed; border:1px solid #39414f;
+    padding:7px 13px; border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; }
+  #topbar button.go { background:#2563eb; border-color:#2563eb; }
+  #topbar button:disabled { opacity:.4; cursor:default; }
+
+  #hud { position:fixed; left:12px; bottom:12px; z-index:30;
+    background:rgba(10,12,16,.96); border:1px solid #3a4457; border-radius:10px;
+    padding:12px 15px; font-size:12.5px; line-height:1.75; white-space:pre;
+    font-family:ui-monospace,Consolas,monospace; max-width:640px; display:none; }
+  #hud.on { display:block; }
+  #hud b { color:#4ade80; }
+  #hud .warn { color:#ff6b6b; }
+  #hud .dim { color:#9aa0a6; }
+
+  #preview { position:absolute; left:0; top:0; pointer-events:none; z-index:20; }
+
+  #cam { position:fixed; right:12px; bottom:12px; width:220px; z-index:30;
+    border:1px solid #39414f; border-radius:8px; transform:scaleX(-1); display:none; }
+  #cam.on { display:block; }
+
+  #center { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    z-index:40; text-align:center; display:none; }
+  #center.on { display:block; }
+  #center .l1 { font-size:34px; font-weight:700; margin-bottom:10px; }
+  #center .l2 { font-size:17px; color:#4ade80; margin-bottom:6px; }
+  #center .l3 { font-size:14px; color:#9aa0a6; }
+
+  #rangebox { position:absolute; border:2px dashed rgba(74,222,128,.6);
+    background:rgba(74,222,128,.05); border-radius:10px; pointer-events:none;
+    z-index:22; display:none; }
+  #rangebox.on { display:block; }
+  #rangetag { position:absolute; left:0; top:-24px; font-size:12px; color:#4ade80;
+    white-space:nowrap; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="paper">
+    <h1>注意力预测层 · 端到端验证</h1>
+    <div class="sub">
+      用真实视线数据验证「认知状态推断层」。读下面的文字即可，
+      读到觉得卡住、需要反复看的地方，按 <b>空格</b> 标注（作为真值）。
+    </div>
+    <div id="paras"></div>
+  </div>
+
+  <div id="rangebox"><span id="rangetag"></span></div>
+  <canvas id="preview"></canvas>
+  <video id="cam" autoplay muted playsinline></video>
+
+  <div id="topbar">
+    <button id="btn-init" class="go">① 授权摄像头并加载模型</button>
+    <button id="btn-fs">② 进入全屏</button>
+    <button id="btn-start" disabled>③ 开始阅读</button>
+    <button id="btn-calib" disabled>自动标定</button>
+    <button id="btn-hud">HUD</button>
+    <button id="btn-export" disabled>导出</button>
+    <span id="status" style="color:#9aa0a6">未开始</span>
+  </div>
+
+  <div id="hud"></div>
+  <div id="center"><div class="l1"></div><div class="l2"></div><div class="l3"></div></div>
+</div>
+
+<script type="module">
+// ============================================================================
+//  阅读器 —— 认知状态推断层的端到端验证
+//
+//  映射部分【原样沿用】demo-hand.html 里已验证的方案：
+//      固定输入区直接映射（零校准）+ [ ] 调灵敏度 + EMA/均值/1€ 滤波
+//  只把目标网格换成文本段落，并接上推断层。
+//
+//  推断层参数与 tools/cognitive_state.py 一致，便于互相对照。
+// ============================================================================
+
+const VENDOR = '../vendor/';
+let FaceLandmarker = null, FilesetResolver = null;
+
+// ---------------------------------------------------------------- 视线特征
+// 与 demo 一致的 7 维：只用不含眼睑污染的量
+//   [iry, irx, gx, gx^2, iry^2, L_h_rel, R_h_rel]
+const GAZE_LM = { L_IRIS: 468, R_IRIS: 473, L_OUT: 33, L_IN: 133,
+                  R_IN: 362, R_OUT: 263 };
+const N_FEAT = 8;
+
+// ---------------------------------------------------------------- 平滑参数
+// 取 demo 里实测手感最好的"轻"档
+let SM = { name: '轻', ema: 0.35, cutoff: 1.6, beta: 0.035 };
+// 手动阻尼倍率（K 加重 / L 减轻），与自适应缩放相乘
+let DAMP = 1.0;
+
+// 1€ filter
+function OneEuro(minCutoff, beta, dCutoff) {
+  this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
+  this.x = null; this.dx = null; this.t = null;
+}
+OneEuro.prototype.alpha = function (cutoff, dt) {
+  const tau = 1 / (2 * Math.PI * cutoff);
+  return 1 / (1 + tau / dt);
+};
+OneEuro.prototype.filter = function (z, tSec) {
+  if (this.t === null) {
+    this.t = tSec; this.x = z.slice(); this.dx = [0, 0];
+    return z.slice();
+  }
+  let dt = tSec - this.t;
+  if (!(dt > 0) || dt > 0.5) dt = 1 / 30;
+  this.t = tSec;
+  const aD = this.alpha(this.dCutoff, dt);
+  const dx = [(z[0] - this.x[0]) / dt, (z[1] - this.x[1]) / dt];
+  this.dx = [aD * dx[0] + (1 - aD) * this.dx[0],
+             aD * dx[1] + (1 - aD) * this.dx[1]];
+  const speed = Math.hypot(this.dx[0], this.dx[1]);
+  const cutoff = this.minCutoff + this.beta * speed;
+  const a = this.alpha(cutoff, dt);
+  this.x = [a * z[0] + (1 - a) * this.x[0],
+            a * z[1] + (1 - a) * this.x[1]];
+  if (!Number.isFinite(this.x[0]) || !Number.isFinite(this.x[1])) {
+    this.x = z.slice(); this.dx = [0, 0];
+  }
+  return this.x.slice();
+};
+
+// ---------------------------------------------------------------- 直接映射
+// 输入区：相对量的取值范围比绝对坐标小得多（虹膜只在眼眶内移动）。
+//
+//  这里踩过一个坑：初值按"虹膜相对眼眶左右各约 ±0.15 个瞳距"估，
+//  而实测跨度只有 hAvg 0.049 / vAvg 0.055 —— 估宽了 6 倍以上。
+//  输入区越宽，同样的眼动产生的光标位移越小，于是光标只在中间小幅晃动。
+//
+//  现按实测取值（tools/ 下已统计 4147 帧）：
+//      hAvg 范围 [-0.0221, 0.0272] -> 取 [-0.028, 0.028]
+//      vAvg 范围 [-0.0126, 0.0425] -> 取 [-0.016, 0.046]（注意中心不是 0）
+//  垂直量改用眼角连线后量纲变了，按实测重新取值：
+//      vAvg 范围 [-0.0236, 0.0851] 跨度 0.109 -> 留余量取 [-0.037, 0.098]
+//      （注意垂直中心明显不在 0，因为眼角连线在虹膜上方）
+// 输入区默认值 —— 必须与 buildFeatures 的输出量纲一致
+//
+//  这里踩过一次：换成"绝对虹膜坐标 + 头姿"后，特征函数改了，
+//  但输入区还是【相对量】的旧值（x 约 ±0.028），
+//  于是映射输出是天文数字、被兜底判为无效，predictDirect 恒返回 null ——
+//  表现就是"映射失败 2191、通过 0、光标不动"。
+//
+//  新特征的实测范围（来自现场日志）：
+//      L.y 0.79  L.x 0.53  R.y 0.81  R.x 0.44  yaw 0.00  pitch 0.32  iod 0.13  eyeCy 0.80
+//  取首维(L.y)与次维(L.x)作为映射的两个输入，区间各留约 ±0.25 余量，
+//  之后可用 [ ] 调灵敏度、+ - ; ' 平移。
+// 输入区：前两维现在是【相对量为主】(约 ±0.1) 加少量绝对量偏移，
+// 所以量纲回到 0 附近，不再是 0.3~0.9 那种绝对坐标量级。
+const DIRECT_IN = { x0: -0.10, x1: 0.10, y0: -0.10, y1: 0.10 };
+
+// ---------------------------------------------------------------- 状态
+const S = {
+  model: null, video: null, running: false,
+  directIn: null, direct: null,
+  filt: null, ema: null, acc: [],
+  lastTip: {}, fps: 0, frames: 0, lastFpsT: 0,
+  camIn: 0, camTot: 0,
+  active: false,
+  // 推断层
+  tracker: null,
+  regions: [],
+  gazeRid: null,
+  stats: {},
+};
+
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// ============================================================================
+//  推断层 —— 与 tools/cognitive_state.py 的参数完全一致
+// ============================================================================
+const FPS_ASSUMED = 30;
+const DT = 1 / FPS_ASSUMED;
+const STILL_SPEED_PX_S = 13.2 * 3 / 0.0103;   // 实测逐帧步长 p90 的 3 倍
+const MIN_VISIT_SEC = 0.15;
+// 离开后需超过这个时长再回来，才算一次【新的】访问。
+// 取 0.5 秒：抖动穿越通常只有几十毫秒，而真实回看间隔一般在秒级。
+const MIN_GAP_SEC = 0.5;
+const T_SKIP = 0.35, T_READ_LO = 0.50, T_READ_HI = 1.80;
+const T_BLOCKED = 2.00, T_PREPARE = 1.50;
+const AUX_REVISIT_MIN = 2, AUX_LONG_VISIT_MULT = 2.0;
+const AUTO_REVEAL_WINDOW_S = 30.0, AUTO_REVEAL_COUNT = 3;
+const SIDEBAR_DWELL_S = 0.8;
+
+// 阅读速度初值：字/秒。5 字/秒 ≈ 300 字/分钟
+// 实际应从使用者自己的正常段落估出，这里先给初值，运行中自适应。
+let CPS = 5.0;
+
+class Tracker {
+  constructor(regions) {
+    this.regions = regions;
+    // zones 与 regions 是同一份数据的两个名字。
+    // 这里踩过一次：改写 baseOf 时把分区版 reader_zones.html 的
+    // this.zones 照搬了过来，而本文件的 Tracker 只定义了 regions ——
+    // 于是 baseOf 每帧抛异常、主循环中断、标定看不到圆点、采不到样本。
+    this.zones = regions;
+    this.dwell = {}; this.visits = {}; this.visitDurs = {};
+    this.lastExit = {};        // rid -> 上次离开该段的时刻
+    this.visitAccum = {};      // rid -> 本次访问已累计的时长
+    this.lastPos = null; this.cur = null; this.curStart = 0;
+    this.events = []; this.blockedHits = {}; this.lastAuto = {};
+    this.prepared = new Set(); this.reveals = [];
+    this.t = 0;
+    this.cpsSamples = [];        // 用于自适应估计阅读速度
+  }
+  regionAt(x, y) {
+    for (const r of this.regions) {
+      if (x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1) return r;
+    }
+    return null;
+  }
+  baseOf(rid) {
+    // 区块编号（'Z0'...）没有对应字数，用各段字数的均值作为基线 ——
+    // 推断层比较的是"各区之间的相对处理量"，统一基线是可接受的。
+    if (typeof rid === 'string' && rid[0] === 'Z') {
+      const tot = this.zones.reduce((a, z) => a + (z.chars || 0), 0);
+      const nz = Math.max(1, this.zones.length);
+      return Math.max(tot / nz / CPS, 0.2);
+    }
+    const r = this.zones.find(v => v.zid === rid);
+    return r ? Math.max(r.chars / CPS, 0.2) : null;
+  }
+  revisitOf(rid) { return Math.max((this.visits[rid] || 0) - 1, 0); }
+  effortOf(rid) { return this.dwell[rid] || 0; }
+  ratioOf(rid) {
+    const b = this.baseOf(rid);
+    return (b && b > 0) ? this.effortOf(rid) / b : null;
+  }
+  // ------------------------------------------------------------------
+  //  访问计数 —— 抗抖动（这里修过一个让整个推断层失真的问题）
+  //
+  //  现场现象：读 8 段文字，HUD 显示"回看 24 次"。
+  //  原因是光标在段落边界抖动时来回穿越，每次穿越都记一次新访问。
+  //  而"回看次数"正是推断层的主判据（ratio 的辅助条件、以及
+  //  "是否反复回到同一段"的判断都靠它）——
+  //  所以回看虚高会让"处理受阻"的判定整体失真。
+  //
+  //  两条修正：
+  //    ① dwell 只在【本次访问已确认成立】(停留 >= MIN_VISIT_SEC) 后累计，
+  //       否则边界抖动那几十毫秒也会被算成"注视时间"。
+  //    ② 离开后必须超过 MIN_GAP_SEC 再回来，才算一次【新的】访问。
+  //       短时间内反复进出（抖动穿越）只算同一次访问的延续。
+  // ------------------------------------------------------------------
+  // 坐标路径：按段落矩形找出所属区域，再交给 updateByRid。
+  // 只有【未标定时的连续光标回退路径】会用这个。
+  update(x, y) {
+    const reg = this.regionAt(x, y);
+    return this.updateByRid(reg ? reg.rid : null);
+  }
+
+  // 区域编号路径：分区判定下直接给出区块编号。
+  //
+  //  为什么拆成两个方法：分区判定的坐标系（按屏幕高度等分）与段落矩形的
+  //  坐标系不是一回事，不能混用。早先试过"用一个魔法值 y=0.9 标记这是编号"，
+  //  那种写法靠约定、极易出错，所以改成显式两个入口。
+  updateByRid(rid) {
+    this.t += DT;
+    const inRegion = (rid !== null);
+
+    // ① dwell 只在访问成立后累计
+    const visitConfirmed = (rid !== null && this.cur === rid &&
+                            this.curStart && (this.t - this.curStart) >= MIN_VISIT_SEC);
+    if (inRegion && visitConfirmed) {
+      this.dwell[rid] = (this.dwell[rid] || 0) + DT;
+      this.visitAccum[rid] = (this.visitAccum[rid] || 0) + DT;
+    }
+
+    if (rid !== this.cur) {
+      // 离开旧段
+      if (this.cur !== null) {
+        const dur = this.t - this.curStart;
+        if (dur >= MIN_VISIT_SEC) {
+          (this.visitDurs[this.cur] = this.visitDurs[this.cur] || []).push(dur);
+          this.lastExit[this.cur] = this.t;      // 记录离开时刻（用于 ② 的判据）
+        } else {
+          // 太短：撤销这次访问（属于边界抖动）
+          this.visits[this.cur] = Math.max((this.visits[this.cur] || 0) - 1, 0);
+          this.visitAccum[this.cur] = 0;
+        }
+      }
+      this.cur = rid;
+      this.curStart = rid !== null ? this.t : 0;
+      // ② 进入新段：只有距上次离开足够久，才算一次新访问
+      if (rid !== null) {
+        const lastOut = this.lastExit[rid];
+        const isNew = (lastOut === undefined) || (this.t - lastOut >= MIN_GAP_SEC);
+        if (isNew) {
+          this.visits[rid] = (this.visits[rid] || 0) + 1;
+          this.visitAccum[rid] = 0;
+        }
+      }
+    }
+    return this.classify(rid);
+  }
+  classify(rid) {
+    if (rid === null) return { state: 'off', rid: null };
+    const ratio = this.ratioOf(rid);
+    if (ratio === null) return { state: 'off', rid };
+    const rv = this.revisitOf(rid);
+    const durs = this.visitDurs[rid] || [];
+    const base = this.baseOf(rid);
+    let longest = durs.length ? Math.max(...durs) : 0;
+    if (rid === this.cur && this.curStart) {
+      longest = Math.max(longest, this.t - this.curStart);
+    }
+    const aux = [];
+    if (rv >= AUX_REVISIT_MIN) aux.push('回看' + rv + '次');
+    if (base && longest > base * AUX_LONG_VISIT_MULT) aux.push('单次' + longest.toFixed(1) + 's');
+    const ev = this.events.filter(e => e[2] === rid && this.t - e[0] <= 30);
+    if (ev.length) aux.push('操作' + ev.length + '次');
+
+    const info = { ratio, revisit: rv, effort: this.effortOf(rid), base, longest, aux };
+
+    let state;
+    if (ratio > T_BLOCKED && aux.length) state = 'blocked';
+    else if (ratio < T_SKIP && rv === 0) state = 'skipped';
+    else state = 'reading';
+
+    // 静默准备
+    if (ratio > T_PREPARE && !this.prepared.has(rid)) {
+      this.prepared.add(rid);
+      info.preparedNow = rid;
+    }
+    // 受阻计数与自动展开（带冷却）
+    if (state === 'blocked') {
+      (this.blockedHits[rid] = this.blockedHits[rid] || []).push(this.t);
+      const recent = this.blockedHits[rid].filter(v => this.t - v <= AUTO_REVEAL_WINDOW_S);
+      const last = this.lastAuto[rid] === undefined ? -1e9 : this.lastAuto[rid];
+      if (recent.length >= AUTO_REVEAL_COUNT && this.t - last > AUTO_REVEAL_WINDOW_S) {
+        this.reveals.push([this.t, rid, 'auto-repeat']);
+        this.lastAuto[rid] = this.t;
+        this.blockedHits[rid] = [];
+      }
+    }
+    return { state, rid, info };
+  }
+  addEvent(kind, rid) { this.events.push([this.t, kind, rid === undefined ? null : rid]); }
+}
+
+// ============================================================================
+//  正文（内嵌，避免网络依赖）
+// ============================================================================
+const TITLE = '注意力预测层 · 端到端验证';
+const TEXT = [
+  '这是用于验证认知状态推断层的一段说明文字。请按平时的习惯阅读，不需要刻意放慢或加快。系统的目标是判断你是否在某个段落上"处理受阻"，也就是读起来觉得卡住、需要反复看才能理解。',
+  '判断依据不是"你看了多久"，因为看得久也可能只是这一段内容本来就多。真正的依据是"是否反复回到同一段"。正常前进时每一段只访问一次；而受阻时同一段会被访问两到四次。这个区别在阅读研究里叫回视次数，是一个成熟指标。',
+  '为了让系统能工作，需要先建立一个基线：你读一段正常文字平均需要多少时间。系统会在你读前几段时估计这个值，之后每一段都拿自己的实际用时与基线比较。这样做的原因是每个人的阅读速度差异很大，如果用绝对阈值，读得慢的人会被全部判成受阻。',
+  '在工程实现上有一个容易混淆的地方值得说明。眼动信号里有三个不同的量：第一个是绝对偏差，也就是预测位置和目标位置差多少，这个量很大但可以通过校准消除；第二个是位置抖动，也就是盯着同一个地方不动时预测位置的整体散布，实测大约是七十五像素；第三个是逐帧步长，也就是相邻两帧之间预测位置移动了多少，实测中位数只有四点二像素。判断"是否在停留"必须用第三个数，而不是第二个。',
+  '如果误用了位置抖动作为停留判据，会得到一个很荒谬的结果：任何一帧都不被算作停留，于是所有段落的累计注视时间都是零，系统永远无法判断任何状态。这个错误在实际开发中出现过，排查花了相当时间，因为它的表现是系统"看起来在正常运行但什么也不输出"。',
+  '当系统判断某个段落处理受阻时，它的反应是静默准备：在后台生成这一段可能需要的术语解释或背景补充，但界面上不出现任何变化。只有当使用者主动把视线移到侧边区域并停留超过零点八秒，准备好的内容才会展开。这样设计的原因是不打断阅读，误报的代价比漏报高得多。',
+  '还有一个例外情况需要处理。如果同一段在三十秒内被连续判定受阻三次以上，说明使用者自己解决不了，此时不打断反而更糟，所以系统会自动展开一次。这个自动展开必须记入日志，因为它改变了实验的对照条件。',
+  '以上就是这段说明的全部内容。读完之后系统会给出它对每一段的判断，以及它认为哪些段落处理受阻。你可以把它给出的结果与自己的实际感受对比，这就是对这个推断层最直接的检验。',
+];
+
+function buildParagraphs() {
+  const host = $('paras');
+  host.innerHTML = '';
+  S.regions = [];
+  TEXT.forEach((txt, i) => {
+    const d = document.createElement('div');
+    d.className = 'para';
+    d.dataset.rid = i;
+    d.innerHTML = '<span class="tag">' + (i + 1) + '</span>' + txt;
+    host.appendChild(d);
+  });
+  // 布局完成后再量区域（段级矩形）
+  requestAnimationFrame(() => {
+    S.regions = [];
+    TEXT.forEach((txt, i) => {
+      const el = document.querySelector('.para[data-rid="' + i + '"]');
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      S.regions.push({ rid: i, x0: r.left, y0: r.top, x1: r.right, y1: r.bottom,
+                       chars: txt.length, el });
+    });
+  });
+}
+
+// ============================================================================
+//  映射（沿用 demo 的做法）
+// ============================================================================
+function computeWorkBox() {
+  return { x0: 0.16, x1: 0.84, y0: 0.06, y1: 0.94 };
+}
+// ---------------------------------------------------------------------------
+//  两轴独立自适应输入区
+//
+//  现场问题："可以上下动但幅度小"。
+//  原因是水平与垂直用了【同一个跨度】(输入区 0.582 x 0.582)，
+//  而垂直量（虹膜到眼角连线的距离）实际变化范围远小于水平量 ——
+//  于是垂直方向只用到输入区的一小部分，光标上下只能走一小段。
+//
+//  之前靠离线数据估范围，但垂直量的定义换过两次（眼缘中点 -> 眼角连线），
+//  范围也跟着变，估不准。所以改成【运行中自己量】：
+//    持续记录 hAvg / vAvg 的实际极值，按 p5~p95 分位设定输入区，
+//    两轴各自独立。这样换任何特征都不用改代码。
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  每轴方向与偏置 —— 由自动标定测出，不靠约定猜测
+//
+//  现场问题一："我往下看光标往上走" —— 说明垂直轴【符号反了】。
+//  这类坐标约定的问题不该靠我猜：虹膜相对眼角连线的距离，
+//  正负号取决于眼角连线的方向定义，换个定义就反。
+//
+//  现场问题二："我读第一段光标在第二段" —— 说明存在【固定偏置】。
+//
+//  这两个量都能在标定里【直接测出来】：
+//    让使用者看屏幕上方（对应段落顶部）与下方（对应段落底部），
+//    比较两次的特征中位数：
+//      · 谁大谁小 -> 决定该轴是否需要反号
+//      · 两个中位值 -> 直接作为输入区的上下界（顺带解决偏置）
+//  水平轴同理。这样"方向"和"偏置"都不再是假设。
+// ---------------------------------------------------------------------------
+// 阅读中的手动偏置微调（像素）
+//
+//  为什么需要它：标定时使用者盯的是屏幕上的小圆点（15% / 85% 位置），
+//  而阅读时是读正文（实际约 96~1080px）—— 两种姿态本身不同，
+//  标定测出的映射到了阅读时就有恒定偏差。
+//  这是标定的固有局限，不是 bug。
+//
+//  所以给一个【阅读中直接微调】的手段，比反复重标定实用：
+//    方向键上/下 = 上下平移光标（每步 20px）
+//    按 R        = 以【当前视线位置】为零点重新对齐（一次性消除残余偏置）
+const OFFSET = { x: 0, y: 0 };
+
+const AXIS = {
+  invX: false,     // 水平轴是否反号
+  invY: false,     // 垂直轴是否反号
+  loX: null, hiX: null,   // 标定得到的输入区边界（未加余量）
+  loY: null, hiY: null,
+  measured: true,   // 旧逻辑遗留：恒为 true，避免误触发自适应
+};
+
+// 两轴自适应默认【关闭】。
+//
+//  这里修过一个导致"光标乱跳"的问题：
+//  自适应的关闭条件绑在 AXIS.measured 上，而 AXIS.measured 只在旧的 finishCalib
+//  里被设为 true —— 那个函数已被区块版标定取代，于是条件永远为假、
+//  自适应一直开着，把输入区压缩到 0.017，灵敏度被推到 39 倍，
+//  噪声被放大 39 倍 → 光标抖动 288px、满屏乱跳。
+//
+//  分区路径根本不用输入区（它不依赖坐标映射），所以自适应没有存在理由。
+const AUTO = {
+  on: false,
+  h: [], v: [],
+  win: 600,          // 用最近 600 帧（约 6~10 秒）估计范围
+  settled: false,
+  spanH: 0, spanV: 0,
+};
+
+// ---------------------------------------------------------------------------
+//  慢漂移消除（debias）
+//
+//  现场现象：光标会自己缓慢下落，削掉绝对虹膜 y 后仍有残留（占输入区 6.9%）。
+//  而且存在一个【反馈回路】在放大它：
+//      特征有慢漂移 -> 两轴自适应按观测范围设输入区 -> 灵敏度被推到 23.56x
+//      -> 剩下那点漂移被放大成 87.7px 的光标移动
+//
+//  正确做法不是继续削特征，而是把【慢漂移】这个成分直接去掉：
+//    它只是缓慢变化的基线（眼皮状态、头位微小改变、光照），
+//    用时间常数约 3 秒的指数平均就能估出来。
+//  映射时减去这个基线，视线信号（秒级的注视与扫视）几乎不受影响 ——
+//  这就是标准的高通去漂移，对"缓慢漂移"和"真实眼动"在时间尺度上分开处理。
+// ---------------------------------------------------------------------------
+const DEBIAS = {
+  on: true,
+  tau: 3.0,          // 秒，漂移估计的时间常数
+  bx: null, by: null,
+  last: 0,
+};
+
+function debiasApply(f, nowMs) {
+  if (!DEBIAS.on) return f;
+  const t = nowMs / 1000;
+  if (DEBIAS.bx === null) {
+    DEBIAS.bx = f[0]; DEBIAS.by = f[1]; DEBIAS.last = t;
+    return [0, 0].concat(f.slice(2));
+  }
+  let dt = t - DEBIAS.last;
+  if (!(dt > 0) || dt > 1.0) dt = 1 / 30;
+  DEBIAS.last = t;
+  // 很慢的一阶跟踪：只跟得上"漂移"，跟不上注视与扫视
+  const a = 1 - Math.exp(-dt / DEBIAS.tau);
+  DEBIAS.bx += (f[0] - DEBIAS.bx) * a;
+  DEBIAS.by += (f[1] - DEBIAS.by) * a;
+  const out = f.slice();
+  let vx = f[0] - DEBIAS.bx;
+  let vy = f[1] - DEBIAS.by;
+  // 方向由标定测出（不是约定的）
+  if (AXIS.invX) vx = -vx;
+  if (AXIS.invY) vy = -vy;
+  out[0] = vx; out[1] = vy;
+  return out;
+}
+
+function autoRangeUpdate(f) {
+  if (!AUTO.on || !f) return;
+  AUTO.h.push(f[0]); AUTO.v.push(f[1]);
+  if (AUTO.h.length > AUTO.win) { AUTO.h.shift(); AUTO.v.shift(); }
+  if (AUTO.h.length < 60) return;
+  const pct = (a, q) => {
+    const b = a.slice().sort((x, y) => x - y);
+    return b[Math.min(b.length - 1, Math.max(0, Math.floor(b.length * q)))];
+  };
+  const hLo = pct(AUTO.h, 0.05), hHi = pct(AUTO.h, 0.95);
+  const vLo = pct(AUTO.v, 0.05), vHi = pct(AUTO.v, 0.95);
+  // 跨度下限保护：太小会让灵敏度爆表
+  const MINH = 0.02, MINV = 0.02;
+  let H = hHi - hLo, V = vHi - vLo;
+  if (H < MINH) { const c = (hLo + hHi) / 2; H = MINH; }
+  if (V < MINV) { const c = (vLo + vHi) / 2; V = MINV; }
+  // 留 30% 余量
+  const hPad = H * 0.3, vPad = V * 0.3;
+  S.directIn = {
+    x0: hLo - hPad, x1: hHi + hPad,
+    y0: vLo - vPad, y1: vHi + vPad,
+  };
+  AUTO.spanH = S.directIn.x1 - S.directIn.x0;
+  AUTO.spanV = S.directIn.y1 - S.directIn.y0;
+  AUTO.settled = true;
+}
+
+function fitDirect() {
+  const wb = computeWorkBox();
+  const W = innerWidth, H = innerHeight;
+  const d = S.directIn || DIRECT_IN;
+  return { inX0: d.x0, inX1: d.x1, inY0: d.y0, inY1: d.y1,
+           outX0: wb.x0 * W, outX1: wb.x1 * W,
+           outY0: wb.y0 * H, outY1: wb.y1 * H };
+}
+function gainOf() {
+  const d = S.direct;
+  if (!d) return 1;
+  return Math.max(d.outX1 - d.outX0, 1e-6) /
+         Math.max((d.inX1 - d.inX0) * innerWidth, 1e-6);
+}
+// ============================================================================
+//  分区判定（内层）—— 光标视觉上仍是平滑滑动，但内部用分区
+//
+//  设计动机：连续映射需要约 25x 放大（因为相对量信噪比只有 1.4~1.5），
+//  而放大必然放大基线误差 —— 这就是"偏置与漂移灾难级"的根源。
+//  分区是【分类】问题，不需要放大，因此天然免疫偏置与漂移。
+//
+//  呈现方式：光标平滑地"划"到当前判定区块的中心。
+//  视觉上是连续移动（体感自然），内部是离散且稳定的判定。
+//
+//  准确率与对策：
+//    垂直段落级划分的基础准确率约 66%（水平二分能到 80%，但阅读需要纵向）。
+//    单帧 66% 不够用，靠三件事补：
+//      ① 时间投票：最近 15 帧的众数
+//      ② 迟滞：新区块要连续占多数 0.4 秒才切换
+//      ③ 低置信度保持：票数分散时不动
+//    一段文字要读好几秒（几百帧），冗余足够。
+// ============================================================================
+
+const ZC = {
+  clf: null,            // {mu, sd, B, nz}
+  nz: 0,
+  zone: null,           // 当前生效区块
+  cand: null, candSince: 0,
+  votes: [],
+  cursor: null,         // 平滑中的光标位置
+  switches: 0,
+  acc: null,            // 标定时算出的自检准确率
+};
+
+function zoneOfY(y) {
+  // 按屏幕高度把正文区域等分成 nz 个区块
+  const box = computeWorkBox();
+  const top = box.y0 * innerHeight, bot = box.y1 * innerHeight;
+  const t = (y - top) / Math.max(bot - top, 1);
+  return Math.max(0, Math.min(ZC.nz - 1, Math.floor(t * ZC.nz)));
+}
+
+function ridgeSmall(Z, y, lam) {
+  const d = Z[0].length, n = Z.length;
+  const G = [], b = new Array(d).fill(0);
+  for (let i = 0; i < d; i++) G.push(new Array(d).fill(0));
+  for (let k = 0; k < n; k++) {
+    const z = Z[k];
+    for (let i = 0; i < d; i++) {
+      b[i] += z[i] * y[k];
+      for (let j = 0; j < d; j++) G[i][j] += z[i] * z[j];
+    }
+  }
+  for (let i = 0; i < d - 1; i++) G[i][i] += lam;
+  const A = G.map((r, i) => r.concat([b[i]]));
+  for (let c = 0; c < d; c++) {
+    let piv = c;
+    for (let r = c + 1; r < d; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+    if (Math.abs(A[piv][c]) < 1e-12) return null;
+    const tmp = A[c]; A[c] = A[piv]; A[piv] = tmp;
+    for (let r = 0; r < d; r++) {
+      if (r === c) continue;
+      const f = A[r][c] / A[c][c];
+      if (!f) continue;
+      for (let k = c; k <= d; k++) A[r][k] -= f * A[c][k];
+    }
+  }
+  const out = new Array(d);
+  for (let i = 0; i < d; i++) out[i] = A[i][d] / A[i][i];
+  return out.every(Number.isFinite) ? out : null;
+}
+
+// 用标定样本训练分区分类器（每区一个 ridge 二分类，取最高分）
+function fitZoneClassifier(samples, nz) {
+  if (!samples || samples.length < nz * 8) return null;
+  const nf = samples[0].f.length, n = samples.length;
+  const mu = [], sd = [];
+  for (let i = 0; i < nf; i++) {
+    const v = samples.map(q => q.f[i]);
+    const m = v.reduce((a, b) => a + b, 0) / n;
+    const s2 = Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / n) || 1e-9;
+    mu.push(m); sd.push(s2);
+  }
+  const std = (f) => f.map((v, i) => (v - mu[i]) / sd[i]);
+  const Z = samples.map(q => std(q.f).concat([1]));
+  const lab = samples.map(q => zoneOfY(q.py));
+  const B = [];
+  for (let k = 0; k < nz; k++) {
+    const t = lab.map(l => (l === k ? 1 : 0));
+    const b = ridgeSmall(Z, t, 10.0);
+    if (!b) return null;
+    B.push(b);
+  }
+  // 自检
+  let ok = 0;
+  for (let i = 0; i < n; i++) {
+    const sc = B.map(b => Z[i].reduce((a, x, j) => a + x * b[j], 0));
+    let best = 0;
+    for (let k = 1; k < sc.length; k++) if (sc[k] > sc[best]) best = k;
+    if (best === lab[i]) ok++;
+  }
+  return { mu, sd, B, nz, acc: ok / n };
+}
+
+function predictZone(f) {
+  const c = ZC.clf;
+  if (!c || !f) return null;
+  const z = f.map((v, i) => (v - c.mu[i]) / c.sd[i]).concat([1]);
+  if (z.some(v => !Number.isFinite(v))) return null;
+  const sc = c.B.map(b => z.reduce((a, x, j) => a + x * b[j], 0));
+  let best = 0;
+  for (let k = 1; k < sc.length; k++) if (sc[k] > sc[best]) best = k;
+  const sorted = sc.slice().sort((a, b) => b - a);
+  const conf = Math.max(0, Math.min(1, (sorted[0] - sorted[1]) / (Math.abs(sorted[0]) + 1e-6)));
+  return { zone: best, conf };
+}
+
+// 时间投票 + 迟滞：把单帧约 66% 的准确率提到可用水平
+function zoneDecision(f, now) {
+  const p = predictZone(f);
+  if (!p) return ZC.zone;
+  ZC.votes.push(p.zone);
+  if (ZC.votes.length > 15) ZC.votes.shift();
+  const cnt = {};
+  ZC.votes.forEach(k => cnt[k] = (cnt[k] || 0) + 1);
+  let best = null, bc = 0;
+  for (const k in cnt) if (cnt[k] > bc) { bc = cnt[k]; best = +k; }
+  const frac = bc / ZC.votes.length;
+  if (ZC.zone === null) { ZC.zone = best; ZC.cand = null; return ZC.zone; }
+  if (best === ZC.zone) { ZC.cand = null; return ZC.zone; }
+  if (frac >= 0.6) {
+    if (best !== ZC.cand) { ZC.cand = best; ZC.candSince = now; }
+    if (now - ZC.candSince >= 400) {          // 持续 0.4 秒才切换
+      ZC.zone = ZC.cand;
+      ZC.switches++;
+      ZC.cand = null;
+    }
+  } else {
+    ZC.cand = null;                            // 票数分散就不动
+  }
+  return ZC.zone;
+}
+
+// 光标平滑地划向当前区块中心（视觉连续、内部离散）
+function zoneCursorTarget(zone) {
+  const box = computeWorkBox();
+  const top = box.y0 * innerHeight, bot = box.y1 * innerHeight;
+  const h = (bot - top) / ZC.nz;
+  return (top + (zone + 0.5) * h);
+}
+
+function predictDirect(f) {
+  const d = S.direct;
+  if (!d) return null;
+  const tx = (f[0] - d.inX0) / (d.inX1 - d.inX0);
+  const ty = (f[1] - d.inY0) / (d.inY1 - d.inY0);
+  let px = d.outX0 + tx * (d.outX1 - d.outX0) + OFFSET.x;
+  let py = d.outY0 + ty * (d.outY1 - d.outY0) + OFFSET.y;
+  if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+  const lim = Math.max(innerWidth, innerHeight) * 3;
+  if (Math.abs(px) > lim || Math.abs(py) > lim) return null;
+  return [px, py];
+}
+
+// ============================================================================
+//  特征
+// ============================================================================
+// ---------------------------------------------------------------------------
+//  视线特征 —— 绝对虹膜坐标 + 显式头姿（最后一版，按实测对比选定）
+//
+//  完整修正记录（每一步都由现场问题触发，结论都来自实测）：
+//
+//  ① 最初用绝对坐标 -> 光标随身体动而不随眼睛动。
+//  ② 改为"虹膜相对眼眶"的相对量 -> 头位被消掉，但【信号也被消掉了】：
+//       绝对坐标  信噪比 5.67 ~ 6.26
+//       纯相对量  信噪比 1.38 ~ 1.52      <- 差 4 倍
+//     这解释了为什么改成相对量后抖动更明显。
+//  ③ 垂直参考从"上下眼缘中点"改为"眼角连线"（眼皮不再推着参考点跑）。
+//  ④ 闭眼/眯眼时虹膜关键点被眼皮推着走 -> 照 EyeTrax 用 EAR 判据丢帧。
+//  ⑤ 滤波换成官方 1€ filter 并逐行验证；但"抖动-延迟"交换比不划算
+//     （降 45% 抖动要付 200ms 延迟，预算只有 10~20ms），滤波到顶。
+//  ⑥ 于是回到源头提信噪比。用 4147 帧数据对比三套特征，实测：
+//       纯相对量(5维)          抖动 135.6px
+//       绝对虹膜+头姿+眼距(8维)  抖动  88.9px   <- 0.66 倍，最优
+//       绝对+头姿+相对(10维)     抖动 153.0px   <- 1.13 倍，反而更差
+//     即 EyeTrax 的做法：不试图消掉头位，而是把头姿作为【显式特征】
+//     让拟合去补偿。维度也不能多加（36 个标定位置上会过拟合）。
+//
+//  当前实现即第 ⑥ 步的 8 维特征集。
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  眨眼检测（EAR）—— 照 EyeTrax 的做法
+//
+//  这里修过一个把【所有功能】都弄坏的 bug：主循环里调用了 computeEAR /
+//  isBlinking，但从分区版搬"眨眼丢帧"时【只搬了调用、漏搬了定义】，
+//  于是 loop() 每帧抛 ReferenceError，整条链路全断 ——
+//  表现就是"所有功能都用不了"（标定没圆点、开始阅读没反应、光标不动）。
+//
+//  教训与前面几次同类：改完必须验证"这条路径真的跑到了"，
+//  不能只看语法通过。这次是 Console 里的报错直接给出答案。
+//
+//  为什么必须丢帧而不是继续算：闭眼/眯眼时 MediaPipe 输出的虹膜位置
+//  被眼皮推着走，那个位移【不含视线信息】，换任何参考点都救不回来。
+//  EyeTrax 的策略就是用自适应 EAR 阈值判出眨眼然后丢帧。
+// ---------------------------------------------------------------------------
+const EAR = {
+  hist: [],            // 滑动历史（用于估计"睁眼时的 EAR"）
+  minHistory: 15,      // 与 EyeTrax 的 min_history 一致
+  ratio: 0.75,         // 由 0.62 提回 0.75：眨眼是渐变的，
+                       // 半闭帧的 EAR 仍在 0.62 阈值之上被放行，
+                       // 现场表现就是光标轻微跳一下
+  warmupThr: 0.18,     // 历史不足时的兜底阈值
+  last: 0.0,
+  value: 0.0,
+  thr: 0.0,
+};
+
+// 取中位数（不改动原数组）
+function medianOf(a) {
+  const b = a.slice().sort((x, y) => x - y);
+  const n = b.length;
+  return n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2;
+}
+
+function computeEAR(lm) {
+  const g = (i) => ({ x: 1 - lm[i].x, y: lm[i].y });
+  const lw = Math.hypot(g(33).x - g(133).x, g(33).y - g(133).y) + 1e-9;
+  const lh = Math.hypot(g(159).x - g(145).x, g(159).y - g(145).y);
+  const rw = Math.hypot(g(263).x - g(362).x, g(263).y - g(362).y) + 1e-9;
+  const rh = Math.hypot(g(386).x - g(374).x, g(386).y - g(374).y);
+  const ear = ((lh / lw) + (rh / rw)) / 2;
+  EAR.value = ear;
+  EAR.last = ear;
+  return ear;
+}
+
+function isBlinking(ear) {
+  EAR.hist.push(ear);
+  if (EAR.hist.length > 90) EAR.hist.shift();
+  // 基线用中位数而不是均值：眨眼帧占比小，不会把基线拉偏
+  EAR.thr = (EAR.hist.length >= EAR.minHistory)
+    ? medianOf(EAR.hist) * EAR.ratio
+    : EAR.warmupThr;
+  return ear < EAR.thr;
+}
+
+function buildFeatures(lm) {
+  const g = (i) => ({ x: 1 - lm[i].x, y: lm[i].y });   // 镜像
+
+  // ---- 绝对虹膜坐标（信噪比最高的信号）----
+  const L = g(GAZE_LM.L_IRIS), R = g(GAZE_LM.R_IRIS);
+
+  // ---- 头姿：用稳定的解剖点算，不用整脸 ----
+  const lOut = g(GAZE_LM.L_OUT), rOut = g(GAZE_LM.R_OUT);
+  const nose = g(1), fore = g(10), chin = g(152);
+  const eyeCx = (lOut.x + rOut.x) / 2;
+  const eyeCy = (lOut.y + rOut.y) / 2;
+  const iod = Math.abs(rOut.x - lOut.x) + 1e-9;
+
+  // yaw：鼻子相对双眼中心的水平偏移（头左右转时鼻子会偏向一侧）
+  const yaw = (nose.x - eyeCx) / iod;
+  // pitch：眼睛在脸上的相对高度（用眼到额/下巴的距离比）
+  const faceLen = Math.abs(chin.y - fore.y) + 1e-9;
+  const pitch = (eyeCy - fore.y) / faceLen;
+  // 脸到摄像头的距离代理：瞳距本身（近则大）
+  const distProxy = iod;
+
+  // ------------------------------------------------------------------
+  //  混合加权：相对量（跟眼）为主，绝对量（稳但跟头）为辅
+  //
+  //  现场问题："光标不跟眼"。原因是绝对坐标里【头位平移的分量
+  //  远大于眼球转动的分量】—— 头一动，四个绝对坐标同向位移，
+  //  于是光标跟着头走。这正是之前改成相对量的原因。
+  //
+  //  但纯相对量抖动 136px。所以这里取两者折中：
+  //    · 相对量（虹膜相对眼眶，已消掉头位）权重高 —— 决定"跟眼"
+  //    · 绝对量权重低 —— 只提供少量稳定性，不主导方向
+  //  映射的两个输入用【相对量】，绝对量与头姿放在后面仅作辅助，
+  //  因为直接映射只用前两维。
+  // ------------------------------------------------------------------
+  const rlx = (L.x - (lOut.x + g(133).x) / 2) / iod;   // 左虹膜相对眼眶水平
+  const rly = (L.y - ((g(159).y + g(145).y) / 2)) / iod; // 左虹膜相对眼眶垂直
+  const rrx = (R.x - (g(362).x + rOut.x) / 2) / iod;
+  const rry = (R.y - ((g(386).y + g(374).y) / 2)) / iod;
+  const W = 1.0;                        // 相对量权重（主导）
+  const w = 0.15;                       // 绝对量权重（仅用于【水平】辅助；
+                                        // 垂直方向的绝对量已被证明受眼皮污染，禁用）
+  // 垂直方向必须【单独算】，不能直接用 rly/rry：
+  //   rly 是以"上下眼缘中点"为参考的，上眼皮一动参考点就跑
+  //   （现场确认过："随眼球动却像是随着上眼皮动的"）。
+  // 改用【眼角连线】作参考：眼角几乎不随眼球转动、也不随眼皮开合变化。
+  // 做法是求虹膜到该眼内外眼角连线的带符号距离，再用眼角间距归一化。
+  function distToLine(iris, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) + 1e-9;
+    return ((iris.x - a.x) * dy - (iris.y - a.y) * dx) / len;
+  }
+  const lIn = g(133), rIn = g(362);
+  const Lv = distToLine(L, lOut, lIn) / (Math.hypot(lIn.x - lOut.x, lIn.y - lOut.y) + 1e-9);
+  const Rv = distToLine(R, rIn, rOut) / (Math.hypot(rOut.x - rIn.x, rOut.y - rIn.y) + 1e-9);
+
+  // ------------------------------------------------------------------
+  //  垂直方向【不能】再掺入绝对虹膜 y（L.y / R.y）—— 这是"光标自己往下落"的根因
+  //
+  //  实测证据（4147 帧，每个 trial 内按时间分三段比较）：
+  //      f_irisL_y     漂移 -0.00195  (0.88 sigma)   与眼皮 EAR 相关 r=+0.413
+  //      f_irisR_y     漂移 -0.00267  (1.08 sigma)   与眼皮 EAR 相关 r=+0.391
+  //      f_eyecenter_y 漂移 -0.00088  (0.50 sigma)   相关 r=+0.455
+  //      f_yaw/pitch   漂移  0.0002 / 0.0003 (0.03/0.02 sigma)  <- 头位完全稳定
+  //
+  //  即：头没动、视线没动，但绝对虹膜 y 自己漂了约 1 个标准差，
+  //  而且漂移量与眼皮开合显著相关 —— 眼皮位置一变，
+  //  MediaPipe 输出的虹膜中心就被推着走。这就是现场"光标自己往下落"。
+  //
+  //  所以垂直只用【虹膜到眼角连线的距离】(Lv/Rv)：眼角连线不随眼皮变化，
+  //  实测 f_L_v / f_R_v 与眼皮的相关性远低于绝对坐标。
+  // ------------------------------------------------------------------
+  return [W * (rlx + rrx) / 2 + w * (L.x + R.x) / 2,   // 首维=水平（绝对 x 漂移极小，保留低权重辅助）
+          W * (Lv + Rv) / 2,                            // 次维=垂直（纯相对量，不用绝对 y）
+          rlx - rrx,                                   // 会聚
+          yaw, pitch, distProxy, eyeCy,
+          (rlx + rrx) / 2];
+}
+// ---------------------------------------------------------------------------
+//  特征合理性检查 —— 与特征量纲无关
+//
+//  这里修过一个把功能完全弄坏的 bug：上一版把区间写成"输入区 ± 1.5 倍跨度"，
+//  但那是【相对量】的区间（x 约 ±0.028）。换成绝对虹膜坐标后首维是 0.42 量级，
+//  于是每一帧都被判越界丢掉 —— 表现就是"功能用不了"（光标完全不动）。
+//
+//  教训：这类"默认区间"硬编码在代码里，一旦换特征就会静默失效。
+//  现在只做两件事：
+//    ① 挡掉 NaN / Infinity
+//    ② 挡掉明显离群的极端值（归一化坐标落到屏幕外很多）
+//  真正的可用区间由【自动标定】去量（它本来就按实际特征范围设定输入区），
+//  这样换任何特征都不需要改这个函数。
+// ---------------------------------------------------------------------------
+function featuresSane(f) {
+  if (!f || f.length !== N_FEAT) return false;
+  for (const v of f) if (!Number.isFinite(v)) return false;
+  // 归一化坐标的绝对量级不应超过 -2 ~ 3（虹膜/头姿都是 0~1 量级的量）
+  for (let i = 0; i < f.length; i++) {
+    if (f[i] < -2.0 || f[i] > 3.0) return false;
+  }
+  return true;
+}
+
+// ============================================================================
+//  绘制
+// ============================================================================
+function drawCursor(x, y, state) {
+  const cv = $('preview'), ctx = cv.getContext('2d');
+  if (cv.width !== innerWidth || cv.height !== innerHeight) {
+    cv.width = innerWidth; cv.height = innerHeight;
+    cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px';
+  }
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const col = state === 'blocked' ? '#ff6b6b'
+            : state === 'skipped' ? '#9aa0a6' : '#4ade80';
+  ctx.strokeStyle = col; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
+}
+
+// ============================================================================
+//  主循环
+// ============================================================================
+let lastVideoTime = -1;
+function loop() {
+  requestAnimationFrame(loop);
+  const v = S.video;
+  if (!S.model || !v || v.readyState < 2) return;
+
+  S.frames++;
+  const now = performance.now();
+  if (now - S.lastFpsT > 500) {
+    S.fps = S.frames / ((now - S.lastFpsT) / 1000);
+    S.frames = 0; S.lastFpsT = now;
+  }
+  if (v.currentTime === lastVideoTime) return;
+  lastVideoTime = v.currentTime;
+
+  let out = null;
+  const tDet = performance.now();
+  try { out = S.model.detectForVideo(v, tDet); } catch (e) { return; }
+  const detMs = performance.now() - tDet;
+  S.camTot++;
+  S.c = S.c || { blink:0, noface:0, insane:0, noPredict:0, ok:0 };
+  // 记录视频尺寸与检测返回结构（用于定位"无人脸"）
+  S.vw = v.videoWidth; S.vh = v.videoHeight;
+  S.detKeys = out ? Object.keys(out).join(',') : '(null)';
+  if (out && out.faceLandmarks) S.detN = out.faceLandmarks.length;
+  if (!out || !out.faceLandmarks || !out.faceLandmarks.length) {
+    S.c.noface++;
+    // 连续无人脸时，每隔约 1 秒打印一次诊断，避免刷屏
+    // 连续无人脸达到阈值 -> 自动改用 CPU delegate 重建模型（只做一次）
+    if (S.c.noface === 120 && S.delegate === 'GPU' && !S.triedCpu) {
+      S.triedCpu = true;
+      try {
+        S.delegate = 'CPU';
+        (async () => {
+          try {
+            const fs2 = await FilesetResolver.forVisionTasks(VENDOR + 'wasm');
+            S.model = await FaceLandmarker.createFromOptions(fs2, {
+              baseOptions: { modelAssetPath: VENDOR + 'face_landmarker.task', delegate: 'CPU' },
+              runningMode: 'VIDEO', numFaces: 1,
+              outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false,
+            });
+            S.c.noface = 0;
+            $('status').innerHTML = '<span style="color:#f5a623">' +
+              'GPU 推理无结果，已自动切到 CPU 重新加载模型</span>';
+          } catch (e3) {
+            $('status').innerHTML = '<span style="color:#ff6b6b">CPU 回退也失败: ' +
+              e3.message + '</span>';
+          }
+        })();
+      } catch (e2) { /* 忽略 */ }
+    }
+    if (S.c.noface % 160 === 1) {
+      console.warn('[无人脸诊断] 视频尺寸=' + S.vw + 'x' + S.vh +
+                   ' readyState=' + v.readyState +
+                   ' paused=' + v.paused +
+                   ' 检测返回字段=' + S.detKeys +
+                   ' faceLandmarks长度=' + (S.detN === undefined ? 'n/a' : S.detN));
+    }
+    updateHud(detMs); return;
+  }
+  S.camIn++;
+
+  const lm = out.faceLandmarks[0];
+
+  // ------------------------------------------------------------------
+  //  眨眼检测（照 EyeTrax 的做法）
+  //
+  //  为什么必须丢帧而不是继续算：闭眼/眯眼时 MediaPipe 输出的虹膜位置
+  //  被眼皮推着走，那个位移【不含视线信息】。现场确认过：换参考点
+  //  （上下眼缘中点 -> 内外眼角连线）能提高判别力，但闭眼时仍跟着眼皮走。
+  //  因为污染发生在关键点本身，不在参考系。
+  //
+  //  EyeTrax 的策略就是用一个自适应的 EAR 阈值判出眨眼然后丢帧。
+  //  这里丢帧时保持上一位置（而不是让光标跳回原点），视觉上更自然。
+  // ------------------------------------------------------------------
+  const ear = computeEAR(lm);
+  const blinking = isBlinking(ear);
+  S.ear = ear; S.earThr = EAR.thr; S.blinkRate = 0;
+  // 眨眼结束后再多丢几帧：睁眼过程中虹膜关键点仍在回位，
+  // 这几帧的位置同样不可信（现场：眨眼后光标会轻微跳一下）。
+  if (S.blinkHold > 0) {
+    S.blinkHold--;
+    S.blinkFrames = (S.blinkFrames || 0) + 1;
+    if (S.lastGoodPx) drawCursor(S.lastGoodPx[0], S.lastGoodPx[1], S.lastState || 'reading');
+    updateHud(detMs);
+    return;
+  }
+  if (blinking) {
+    S.blinkHold = 6;
+    S.blinkFrames = (S.blinkFrames || 0) + 1;
+    if (S.lastGoodPx) {
+      drawCursor(S.lastGoodPx[0], S.lastGoodPx[1], S.lastState || 'reading');
+    }
+    updateHud(detMs);
+    return;
+  }
+
+  const feats = buildFeatures(lm);
+  S.lastFeats = feats.slice();
+  S.lastDfeats = null;
+  if (S.lastTip) { S.lastTip.mx = feats[0]; S.lastTip.my = feats[1]; }
+  if (!featuresSane(feats)) { S.c.insane++; updateHud(detMs); return; }
+  // 先去慢漂移，再喂自适应与映射 —— 顺序不能反：
+  // 若先自适应，漂移会把输入区范围撑歪，灵敏度被推高，再放大漂移（反馈回路）。
+  const df = debiasApply(feats, now);
+  S.dfeats = df;
+  // 标定采样在下面的 CAL 分支里做（calibSample），此处不再重复。
+  // 两轴独立自适应：只在【未标定】时启用。
+  // 标定给出的是准确边界，自适应反而会把它带偏。
+  if (AUTO.on && !AXIS.measured) { autoRangeUpdate(df); }
+  S.direct = fitDirect();
+
+  let pv = null;
+  if (ZC.clf) {
+    // ---------------- 分区路径（内层）----------------
+    //  光标不再由连续映射给出，而是平滑地"划"向当前判定区块的中心。
+    //  视觉上仍是连续移动（体感自然），内部是离散且稳定的判定 ——
+    //  这样避开了连续映射必须的约 25x 放大，也就避开了偏置与漂移。
+    const z = zoneDecision(df, now);
+    // z 为 null 时不 return —— 标定期间本来就没有光标位置，
+    // 但标定圆点仍必须画出来（否则"标定需要圆点、圆点需要标定"死循环）。
+    const ty = (z === null) ? (ZC.cursor ? ZC.cursor[1] : innerHeight * 0.5)
+                            : zoneCursorTarget(z);
+    const box = computeWorkBox();
+    const tx = innerWidth * 0.5;                  // 水平先固定居中，避免引入水平噪声
+    if (ZC.cursor === null) ZC.cursor = [tx, ty];
+    // 平滑跟随：约 0.25 秒时间常数，看起来是"滑过去"而不是"跳过去"
+    const k = 1 - Math.exp(-(1 / 30) / 0.25);
+    ZC.cursor[0] += (tx - ZC.cursor[0]) * k;
+    ZC.cursor[1] += (ty - ZC.cursor[1]) * k;
+    pv = [ZC.cursor[0], ZC.cursor[1]];
+    S.zoneNow = z;
+  } else {
+    // ---------------- 连续映射回退路径 ----------------
+    //  未标定时仍可用连续光标（有偏置与漂移，仅作为未标定时的临时方案）
+    pv = predictDirect(df);
+  }
+  // 标定圆点必须在所有提前 return 之前画出来。
+  //  现场问题："点自动标定没黄点" —— 根因是标定期间 ZC.clf 还是 null，
+  //  走连续映射回退路径，而它未标定时返回 null，于是下面那行 return 掉了，
+  //  把后面的 drawCalibDot() 一起跳过。形成"标定要圆点、圆点要标定"的死循环。
+  //  教训：绘制类调用不能放在可能被 return 跳过的位置。
+  if (CAL.active) {
+    S.lastGoodPx = pv || S.lastGoodPx || [innerWidth / 2, innerHeight / 2];
+    drawCursor(S.lastGoodPx[0], S.lastGoodPx[1], 'reading');
+    drawCalibDot();
+    updateHud(detMs);
+    if (CAL.active) calibSample(df);
+    return;
+  }
+  if (!pv) { S.c.noPredict++; updateHud(detMs); return; }
+
+  // ------------------------------------------------------------------
+  //  5 帧中值：专门吃掉眨眼残留造成的单帧小跳变
+  //
+  //  为什么在 EMA 之外还要加：EMA 是加权平均，对单帧大偏移只会
+  //  削弱而不会剔除（跳变被摊到后面几帧上，表现为光标抖一下）。
+  //  中值对单帧离群值免疫 —— 只要窗口内多数帧是好的，输出就是好的。
+  //  5 帧在 55fps 下约 90ms，不会让响应明显变迟钝。
+  // ------------------------------------------------------------------
+  S.medBuf = S.medBuf || [];
+  S.medBuf.push([pv[0], pv[1]]);
+  if (S.medBuf.length > 5) S.medBuf.shift();
+  if (S.medBuf.length >= 3) {
+    const med = (k) => {
+      const a = S.medBuf.map(v => v[k]).sort((x, y) => x - y);
+      return a[Math.floor(a.length / 2)];
+    };
+    pv = [med(0), med(1)];
+  }
+
+  // 分区路径下不再叠加 EMA 与 1€ —— 光标已由 zoneCursor 的平滑器处理，
+  // 再叠一层会让"划过去"变得迟滞。
+  if (ZC.clf) {
+    S.ema = null; S.medBuf = [];
+    S.c.ok++;
+    S.lastGoodPx = pv; S.lastState = 'reading';
+    drawCursor(pv[0], pv[1], 'reading');
+    paintStates();
+    // 暴露分区内部状态，便于定位"当前段为空"
+    S.zoneDiag = 'nz=' + ZC.nz + ' sample=' + (ZC.calN || 0) +
+                 ' zone=' + String(ZC.zone) + ' zoneNow=' + String(S.zoneNow) +
+                 ' votes=' + ZC.votes.length + ' sw=' + ZC.switches;
+    updateHud(detMs, { state: 'reading', rid: (S.tracker ? S.tracker.cur : null), info: {} });
+    if (CAL.active) drawCalibDot();
+    return;
+  }
+
+  // EMA + 1€（与 demo 一致）
+  S.ema = S.ema || { x: pv[0], y: pv[1] };
+  S.ema.x += (pv[0] - S.ema.x) * SM.ema;
+  S.ema.y += (pv[1] - S.ema.y) * SM.ema;
+  let px = S.ema.x, py = S.ema.y;
+  // ------------------------------------------------------------------
+  //  滤波强度随【灵敏度】自动调整 —— 解决"小球抖动"
+  //
+  //  机理：灵敏度 = 输出跨度 / 输入跨度。灵敏度越高，同一份输入噪声
+  //  被放大得越厉害，屏幕上的抖动 = 输入噪声 x 灵敏度。
+  //  所以固定截止频率是不够的：灵敏度一高，噪声就漏过去了。
+  //
+  //  现场数据：自动标定后灵敏度被推到 32.55×（因为水平特征跨度很小），
+  //  于是小球抖得厉害。而 demo 里 1.54× 时是稳的。
+  //
+  //  对策：截止频率按 1/灵敏度^0.7 缩放。这样"滤波后的屏幕抖动"
+  //  大致保持恒定，而不是随灵敏度线性上升。
+  //  指数取 0.7 而不是 1.0：完全按 1/灵敏度 会让高灵敏度下过度平滑、
+  //  移动变拖；0.7 是"压住抖动"与"不拖"之间的折中。
+  // ------------------------------------------------------------------
+  const g = Math.max(gainOf(), 0.05);
+  const gRef = 2.0;                       // 参考灵敏度（约等于 demo 的舒适值）
+  const scl = Math.min(1.0, Math.pow(gRef / g, 0.7));
+
+  // ------------------------------------------------------------------
+  //  两处关键修正（现场："抖动问题太严重了简直是乱飞"）
+  //
+  //  第一版只按 1/灵敏度^0.7 调 minCutoff，仍压不住。核算后发现原因：
+  //      g = 32.55 时 scl = (2.0/32.55)^0.7 = 0.146
+  //      minCutoff = 1.6 x 0.146 = 0.234 Hz
+  //  而 1€ filter 的动态截止频率 = minCutoff + beta x 速度。
+  //  高增益下"光标速度"本身很大（噪声被放大 32 倍），beta 项把截止频率
+  //  推得很高，于是滤波器几乎不起作用 —— 这就是"乱飞"的来源。
+  //
+  //  所以除了 minCutoff，beta 也必须一起压：
+  //      beta' = beta x scl          （让速度项同样退化）
+  //  再加一个截止频率下限 0.45 Hz：低于它会让移动明显变拖，
+  //  而 0.45 Hz 在 30fps 下 alpha ≈ 0.086，足以把高频噪声压掉。
+  // ------------------------------------------------------------------
+  const cutoff = Math.max(SM.cutoff * scl * DAMP, 0.30);
+  const beta = SM.beta * scl * DAMP;
+  S.filt = S.filt || new OneEuro(cutoff, beta);
+  S.filt.minCutoff = cutoff;
+  S.filt.beta = beta;
+  S.effCutoff = cutoff;
+
+  // ------------------------------------------------------------------
+  //  抖动量化 —— 分别在【特征层】与【光标层】统计
+  //
+  //  为什么要分开：只看到"小球乱飞"无法判断是
+  //    ① 特征本身噪声大（信噪比不足）-> 该放弃连续光标
+  //    ② 增益把噪声放大了（输入区太窄）-> 该调标定或降灵敏度
+  //  两个数摆在一起就能区分：
+  //    · 特征抖动/特征跨度 大  -> 属于 ①
+  //    · 光标抖动 px 远大于 特征抖动 x 增益 -> 属于 ②
+  // ------------------------------------------------------------------
+  S.jitBuf = S.jitBuf || [];
+  S.jitBuf.push({ f: df[0], x: px, y: py, t: now });
+  while (S.jitBuf.length && now - S.jitBuf[0].t > 1000) S.jitBuf.shift();
+  if (S.jitBuf.length >= 8) {
+    const sd = (a) => {
+      const m = a.reduce((s, v) => s + v, 0) / a.length;
+      return Math.sqrt(a.reduce((s, v) => s + (v - m) * (v - m), 0) / a.length);
+    };
+    S.jitFeat = sd(S.jitBuf.map(o => o.f));          // 特征层抖动（hAvg 的标准差）
+    S.jitCursor = Math.hypot(sd(S.jitBuf.map(o => o.x)),
+                             sd(S.jitBuf.map(o => o.y)));  // 光标层抖动（px）
+  }
+
+  const fp = S.filt.filter([px, py], now / 1000);
+  px = fp[0]; py = fp[1];
+
+  updateRangeBox();
+
+  // 自动标定：在拿到有效特征后喂给标定逻辑
+  // （calibTick 已由新的四方向标定流程取代，不再调用）
+
+  let res = null;
+  // 分区路径下把【区块编号】直接喂给推断层 —— 它要的就是"在哪一段"，
+  // 而不是连续坐标。这也是推断层原本的设计假设。
+  if (S.active && S.tracker) {
+    if (ZC.clf && S.zoneNow !== null && S.zoneNow !== undefined) {
+      // 区块 -> 段落：4 个区块覆盖 8 段，所以区块 k 代表第 2k 与 2k+1 段。
+      // 早先写成 S.regions[S.zoneNow]，那只映射到前 4 段（区块 0..3 -> 段 1..4），
+      // 后 4 段永远访问不到 —— 回看与停留统计会整体偏在前半篇。
+      // 用【区块编号】作为区域编号喂给推断层。
+      //  推断层靠"编号变化"判断"进入新区域"，编号稳定时不会重复计访问；
+      //  区块就是判定粒度，所以不必再细分到段落。
+      res = S.tracker.updateByRid('Z' + ZC.zoneNow);
+    } else {
+      res = S.tracker.update(px, py);
+    }
+  }
+  S.lastGoodPx = [px, py];
+  S.lastState = res ? res.state : 'reading';
+  // 计数"成功通过"的帧 —— 这一句曾被我漏掉，
+  // 导致 HUD 长期显示"通过 0"，看起来像功能全坏，
+  // 而实际上主循环是跑通的（抖动行有数值即为证据）。
+  S.c.ok++;
+  drawCursor(px, py, S.lastState);
+  paintStates();
+  updateHud(detMs, res);
+}
+
+
+
+function paintStates() {
+  if (!S.tracker) return;
+  for (const r of S.regions) {
+    if (!r.el) continue;
+    const st = S.tracker.classify(r.rid);
+    r.el.classList.toggle('gaze', S.tracker.cur === r.rid);
+    r.el.classList.toggle('prep', S.tracker.prepared.has(r.rid));
+    r.el.classList.toggle('block', st.state === 'blocked');
+  }
+}
+
+function updateRangeBox() {
+  const box = $('rangebox'), tag = $('rangetag');
+  if (!box) return;
+  const d = S.direct;
+  if (!d) { box.classList.remove('on'); return; }
+  const key = [d.outX0|0, d.outY0|0, (d.outX1-d.outX0)|0, (d.outY1-d.outY0)|0].join(',');
+  if (S.rbKey !== key) {
+    S.rbKey = key;
+    box.classList.add('on');
+    box.style.left = d.outX0 + 'px'; box.style.top = d.outY0 + 'px';
+    box.style.width = (d.outX1 - d.outX0) + 'px';
+    box.style.height = (d.outY1 - d.outY0) + 'px';
+    if (tag) tag.textContent = '输出区　灵敏度 ' + gainOf().toFixed(2) + '×　[ 更灵敏　] 更迟钝';
+  }
+}
+
+function updateHud(detMs, res) {
+  const el = $('hud');
+  if (!el || !el.classList.contains('on')) return;
+  const tr = S.tracker;
+  const L = [];
+  if (S.c) {
+    const c = S.c;
+    const why = [];
+    if (c.noface) why.push('无人脸 ' + c.noface);
+    if (c.blink) why.push('眨眼丢帧 ' + c.blink);
+    if (c.insane) why.push('特征越界 ' + c.insane);
+    if (c.noPredict) why.push('映射失败 ' + c.noPredict);
+    L.push('<b>逐帧统计</b> 通过 ' + c.ok + '　' + (why.length ? why.join('　') : '无丢弃'));
+    L.push('<b>推理</b> ' + (S.delegate || '?') + ' delegate');
+  L.push('<b>视频尺寸</b> ' + (S.vw||'?') + 'x' + (S.vh||'?') +
+           '　<b>检测字段</b> ' + (S.detKeys || '?') +
+           '　<b>是否暂停</b> ' + (S.video ? S.video.paused : '?'));
+    if (c.ok === 0) {
+      L.push('<span class="warn">通过 0 帧 —— 光标不可能动。看上面哪一项在涨。</span>');
+    }
+    // 最近一帧的特征值，便于确认量纲
+    if (S.lastFeats) {
+      if (DEBIAS.bx !== null) {
+      L.push('<b>漂移基线</b> ' + DEBIAS.bx.toFixed(4) + ' , ' + DEBIAS.by.toFixed(4) +
+             '　<span class="dim">（时间常数 3 秒，约 9 秒收敛）</span>');
+    }
+    L.push('<b>特征</b> ' + S.lastFeats.map(v =>
+        (typeof v === 'number' && Number.isFinite(v)) ? v.toFixed(4) : String(v)).join(' '));
+    }
+  }
+  if (S.zoneDiag) L.push('<b>分区内部</b> ' + S.zoneDiag);
+  L.push('<b>帧</b> ' + Math.round(S.fps) + ' fps　<b>检测</b> ' +
+         (detMs||0).toFixed(1) + ' ms　<b>在画面</b> ' +
+         (S.camTot ? Math.round(100*S.camIn/S.camTot) : 0) + '%');
+  L.push('<b>灵敏度</b> ' + gainOf().toFixed(2) + '×　' +
+         (S.directIn ? ('输入区 ' + (S.directIn.x1 - S.directIn.x0).toFixed(3) +
+                        ' × ' + (S.directIn.y1 - S.directIn.y0).toFixed(3) +
+                        '（两轴独立）　') : '') +
+         '自适应 ' + (AUTO.on ? '开' : '关') +
+         '　<b>偏置</b> ' + Math.round(OFFSET.x) + ',' + Math.round(OFFSET.y) + '　' +
+         '<b>平滑</b> ' + SM.name +
+         '　<b>截止</b> ' + (S.effCutoff !== undefined ? S.effCutoff.toFixed(2) : '-') + ' Hz' +
+         '　<b>阻尼</b> ' + DAMP.toFixed(2));
+  if (S.jitFeat !== undefined) {
+    const inSpan = S.directIn ? (S.directIn.x1 - S.directIn.x0) : 1;
+    const rel = S.jitFeat / inSpan;            // 特征抖动占输入区的比例
+    const col = S.jitCursor < 8 ? '#4ade80' : (S.jitCursor < 25 ? '#f5a623' : '#ff6b6b');
+    L.push('<b>抖动</b> 特征 ' + S.jitFeat.toFixed(5) +
+           '（占输入区 ' + (rel * 100).toFixed(1) + '%）' +
+           '　光标 <span style="color:' + col + '">' + S.jitCursor.toFixed(1) + ' px</span>' +
+           '　目标 < 8px');
+  }
+  if (S.ear !== undefined) {
+    const blink = (S.ear < (S.earThr || 0)) ? '<span class="warn">闭眼(丢帧)</span>' : '睁眼';
+    L.push('<b>EAR</b> ' + S.ear.toFixed(3) + '　中位 ' +
+           (medianOf(EAR.hist).toFixed(3)) + '　阈值 ' +
+           ((S.earThr || 0).toFixed(3)) + '　' + blink +
+           '　累计丢帧 ' + (S.blinkFrames || 0) +
+           '　丢帧率 ' + (S.camTot ? Math.round(100*(S.blinkFrames||0)/S.camTot) : 0) + '%');
+  }
+  if (tr && res) {
+    const i = res.info || {};
+    L.push('<b>当前段</b> ' + (res.rid === null ? '—' : ('第 ' + (res.rid+1) + ' 段')) +
+           '　<b>状态</b> ' + res.state);
+    if (i.ratio !== undefined && i.ratio !== null) {
+      L.push('  ratio ' + i.ratio.toFixed(2) + '　base ' + (i.base||0).toFixed(1) +
+             's　最长单次 ' + (i.longest||0).toFixed(1) + 's　回看 ' + (i.revisit||0));
+      if (i.aux && i.aux.length) L.push('  辅助条件: ' + i.aux.join('、'));
+    }
+    L.push('<b>静默准备</b> [' + [...tr.prepared].map(x=>x+1).join(', ') + ']　' +
+           '<b>自动展开</b> ' + tr.reveals.length + ' 次');
+    const st = tr.stats || {};
+    const parts = [];
+    for (const r of S.regions) {
+      const c = tr.classify(r.rid);
+      parts.push('P' + (r.rid+1) + ':' + c.state.slice(0,3));
+    }
+    L.push('<span class="dim">' + parts.join(' ') + '</span>');
+  } else {
+    L.push('<span class="dim">点【③ 开始阅读】后开始推断</span>');
+  }
+  if (window.__lastError) L.push('<span class="warn">' + window.__lastError + '</span>');
+  el.innerHTML = L.join('\n');
+}
+
+// ============================================================================
+//  初始化与交互
+// ============================================================================
+async function initAll() {
+  const b = $('btn-init');
+  b.disabled = true; b.textContent = '加载中…';
+  try {
+    const vision = await import(VENDOR + 'vision_bundle.js');
+    FilesetResolver = vision.FilesetResolver;
+    FaceLandmarker = vision.FaceLandmarker;
+    const fs = await FilesetResolver.forVisionTasks(VENDOR + 'wasm');
+    // ------------------------------------------------------------------
+    //  模型创建 —— GPU 优先，失败或检测不到人脸时自动回退到 CPU
+    //
+    //  现场问题：Console 显示模型启动成功（"Graph successfully started running"、
+    //  GL version 3.0），但每帧 faceLandmarks 长度恒为 0，而先前同一份代码
+    //  能稳定报"在画面 100%"。怀疑是 GPU(WebGL) 上下文在 DevTools 打开时丢失，
+    //  推理静默失败 —— 这种情况不抛异常，只返回空结果。
+    //
+    //  所以这里做成两段式：先用 GPU，若启动抛错则立刻改用 CPU；
+    //  运行时若连续多帧检测不到人脸，也自动切到 CPU 重建模型。
+    // ------------------------------------------------------------------
+    const mkOpts = (delegate) => ({
+      baseOptions: { modelAssetPath: VENDOR + 'face_landmarker.task', delegate },
+      runningMode: 'VIDEO', numFaces: 1,
+      outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false,
+    });
+    try {
+      S.model = await FaceLandmarker.createFromOptions(fs, mkOpts('GPU'));
+      S.delegate = 'GPU';
+    } catch (e1) {
+      S.model = await FaceLandmarker.createFromOptions(fs, mkOpts('CPU'));
+      S.delegate = 'CPU';
+    }
+    if (S.model && S.model.setOptions === undefined) { /* 无 setOptions 也没关系 */ }
+    // 摄像头
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: false
+    });
+    S.video = $('cam');
+    S.video.srcObject = stream;
+    await S.video.play();
+    S.video.classList.add('on');
+    $('btn-start').disabled = false;
+    $('btn-calib').disabled = false;
+    $('btn-export').disabled = false;
+    b.textContent = '① 已就绪';
+    $('status').textContent = '就绪 —— 直接点【③ 开始阅读】。光标范围用 [ ] 调灵敏度、+ - ; 平移（不需要标定）';
+    requestAnimationFrame(loop);
+  } catch (e) {
+    b.disabled = false; b.textContent = '① 重试';
+    $('status').innerHTML = '<span style="color:#ff6b6b">失败: ' + e.message + '</span>';
+  }
+}
+
+function startReading() {
+  // 关键：把标定状态强制清干净。
+  // 现场问题：点过【自动标定】但没走完，它一直处于"进行中"，
+  // 每帧继续采集并抢用状态，与阅读模式互相打架 ——
+  // 表现就是"映射失败 227、通过 0"，而实际上映射本身是好的
+  // （抖动行显示 光标 2.6px，说明光标确实算出来过）。
+  if (typeof CAL !== 'undefined') {
+    CAL.active = false; CAL.phase = 'idle';
+    CAL.samples = []; CAL.idx = 0;
+  }
+  hideCenter();
+  const st = $('status');
+  if (st) st.textContent = '阅读中';
+  buildParagraphs();
+  // 阅读开始时重置去漂移基线：标定时的姿态与阅读时可能不同，
+  // 让基线重新收敛到当前姿态，避免残留偏置。
+  DEBIAS.bx = null; DEBIAS.by = null;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    S.tracker = new Tracker(S.regions.map(r => ({ ...r })));
+    S.active = true;
+    S.ema = null; S.acc = []; S.filt = new OneEuro(SM.cutoff, SM.beta);
+    S.medBuf = []; S.blinkHold = 0;
+    S.jitBuf = [];            // 重置抖动统计，避免混入标定期间的样本
+    S.c = { blink:0, noface:0, insane:0, noPredict:0, ok:0 };
+    window.scrollTo(0, 0);
+    $('status').textContent = '阅读中';
+    showCenter('开始阅读', '读到卡住的地方按空格标注', '这是真值，用于对照系统的判断');
+    setTimeout(hideCenter, 2600);
+  }));
+}
+
+// 人工标注（真值）：空格键标注当前段
+const marked = new Set();
+function toggleMark() {
+  if (!S.tracker || S.tracker.cur === null) return;
+  const rid = S.tracker.cur;
+  const el = document.querySelector('.para[data-rid="' + rid + '"]');
+  if (!el) return;
+  if (marked.has(rid)) { marked.delete(rid); el.classList.remove('mark'); }
+  else { marked.add(rid); el.classList.add('mark'); }
+  $('status').textContent = '已标注 ' + marked.size + ' 段';
+}
+
+function exportData() {
+  const tr = S.tracker;
+  if (!tr) { alert('还没有数据'); return; }
+  const rows = [['rid','chars','base_s','dwell_s','ratio','revisit','longest_s',
+                 'state','prepared','marked']];
+  for (const r of S.regions) {
+    const c = tr.classify(r.rid);
+    const i = c.info || {};
+    rows.push([r.rid, r.chars, (i.base||0).toFixed(2), (i.effort||0).toFixed(2),
+               (i.ratio===null||i.ratio===undefined)?'':i.ratio.toFixed(3),
+               i.revisit||0, (i.longest||0).toFixed(2), c.state,
+               tr.prepared.has(r.rid)?1:0, marked.has(r.rid)?1:0]);
+  }
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'reader_states.csv';
+  document.body.appendChild(a); a.click();
+  setTimeout(() => document.body.removeChild(a), 100);
+  $('status').textContent = '已导出 reader_states.csv';
+}
+
+function showCenter(l1, l2, l3) {
+  const c = $('center');
+  c.querySelector('.l1').textContent = l1 || '';
+  c.querySelector('.l2').textContent = l2 || '';
+  c.querySelector('.l3').textContent = l3 || '';
+  c.classList.add('on');
+}
+function hideCenter() { $('center').classList.remove('on'); }
+
+// ============================================================================
+//  自动标定 —— 量出特征的真实取值范围，据此设输入区
+//
+//  为什么需要它（现场问题："绿球只能在前三段动"）：
+//    输入区是按预先估计设的，而每个人的特征量纲不同（头距、眼型、相机角度
+//    都会影响），所以"估的区间"经常与实际差很多。差得越多，特征就只用到
+//    输入区的一部分，光标也就只覆盖一部分屏幕。
+//    手动按 [ ] 调整既费事，水平与垂直又是独立缩放的，很难同时调对。
+//
+//  做法：让使用者依次看 4 个位置（上/下/左/右），记录每一处特征的
+//  中位数，然后用这四个值直接定出输入区，并留一点余量。
+//  这样一次约 8 秒，比反复按 [ ] 可靠得多。
+// ============================================================================
+// 标定目标：四个方向。每个位置记录去漂移后的特征中位数，
+// 用来同时定出【方向】与【输入区边界】。
+// 标定点 = 屏幕上的 4 个固定高度（全部在一屏内，标定全程不需要滚动）
+//
+//  早先想过"每段一个标定点"，那样标定点落在页面下方，必须滚动才能看到，
+//  而且滚动后段的屏幕位置又变了，与"分区按屏幕高度等分"的坐标系不一致。
+//  这里改成固定屏幕位置：4 个点都在视野内，标定不用滚动、坐标也一致。
+//
+//  区块 = 每两段一组（8 段 -> 4 区）。对"处理受阻"检测够用 ——
+//  推断层要的是"你在读哪一段"，而相邻两段的阅读行为通常连在一起。
+const ZONE_ROWS = 4;
+
+function calibPointsFromParagraphs() {
+  const box = computeWorkBox();
+  const top = box.y0 * innerHeight, bot = box.y1 * innerHeight;
+  const h = (bot - top) / ZONE_ROWS;
+  const pts = [];
+  for (let k = 0; k < ZONE_ROWS; k++) {
+    pts.push({
+      name: '第 ' + (k + 1) + ' 区',
+      tag: 'z' + k,
+      px: innerWidth * 0.5,
+      py: top + (k + 0.5) * h,
+    });
+  }
+  return pts;
+}
+
+let CALIB_PTS = [];
+
+const CAL = { active: false, idx: 0, samples: [], tStart: 0, phase: 'idle',
+              px: 0, py: 0, results: {} };
+
+function startCalib() {
+  if (!S.model || !S.video) { $('status').textContent = '请先授权摄像头'; return; }
+  const pts = calibPointsFromParagraphs();
+  if (!pts || pts.length < 2) {
+    $('status').innerHTML = '<span style="color:#ff6b6b">正文未就绪，请稍后重试</span>';
+    return;
+  }
+  CALIB_PTS = pts;
+  ZC.nz = ZONE_ROWS;                  // 4 个区块（每两段一组）
+  ZC.clf = null; ZC.zone = null; ZC.votes = []; ZC.switches = 0;
+  CAL.active = true; CAL.idx = 0; CAL.samples = []; CAL.results = {};
+  CAL.phase = 'guide';
+  AUTO.on = false;
+  // 标定期间滚到顶部，保证每段的屏幕位置与阅读时一致
+  window.scrollTo(0, 0);
+  calibStep();
+}
+
+// 标定采样：只在 collect 阶段、且拿到有效特征时记录
+function calibSample(df) {
+  if (!df) return;
+  if (CAL.phase === 'collect') CAL.samples.push([df[0], df[1]]);
+}
+
+function calibStep() {
+  if (CAL.idx >= CALIB_PTS.length) { finishCalib(); return; }
+  const pt = CALIB_PTS[CAL.idx];
+  CAL.px = pt.px; CAL.py = pt.py;      // 固定屏幕位置，无需滚动
+  CAL.tStart = performance.now();
+
+  // ------------------------------------------------------------------
+  //  第一个点前先预热：让【去漂移基线】收敛后再开始采样
+  //
+  //  现场问题："偏置有大问题，读第 4 段光标在第 3 段"。
+  //  根因是 debiasApply 的基线用时间常数 3 秒的一阶跟踪，
+  //  需要约 9 秒（3 个时间常数）才稳定；而点【自动标定】后
+  //  第一个点 1.5 秒就开始采样，那时基线还在爬升 ——
+  //  采到的四个方向值整体带偏，输入区的上下界也跟着偏，
+  //  于是光标恒定差一段（偏置）。
+  //
+  //  对策：第一个点额外等 2 秒再采样（此时基线已收敛到当前姿态）。
+  // ------------------------------------------------------------------
+  const warmup = (CAL.idx === 0) ? 2000 : 0;
+  if (warmup > 0) {
+    CAL.phase = 'warmup';
+    showCenter('准备中', '请自然看向屏幕，不要刻意动', '约 2 秒后开始标定');
+  }
+  const t0 = performance.now() + warmup;
+  const done = () => {
+    if (performance.now() < t0) { requestAnimationFrame(done); return; }
+    if (CAL.phase === 'warmup') {
+      CAL.phase = 'collect';
+      showCenter('标定 ' + (CAL.idx + 1) + '/' + CALIB_PTS.length,
+                 '看橙色圆点（' + pt.name + '）', '约 1.5 秒，只动眼睛、头别动');
+    }
+    const dwellMs = 1500;
+    if (performance.now() - t0 < dwellMs) { requestAnimationFrame(done); return; }
+    // 取后 3/4 样本的中位数（前 1/4 用于把视线移过去）
+    const arr = CAL.samples;
+    if (arr.length >= 6) {
+      const cut = arr.slice(Math.floor(arr.length / 4));
+      const med = (k) => {
+        const a = cut.map(v => v[k]).sort((x, y) => x - y);
+        return a[Math.floor(a.length / 2)];
+      };
+      CAL.results[pt.tag] = { x: med(0), y: med(1), n: cut.length };
+    }
+    CAL.samples = [];
+    CAL.idx++;
+    hideCenter();
+    calibStep();
+  };
+  requestAnimationFrame(done);
+}
+
+// 标定期间画目标圆点（必须在画布清屏之后调用）
+function drawCalibDot() {
+  if (!CAL.active || CAL.phase !== 'collect') return;
+  const cv = $('preview'), ctx = cv.getContext('2d');
+  ctx.save();
+  ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(CAL.px, CAL.py, 30, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(245,166,35,.9)';
+  ctx.beginPath(); ctx.arc(CAL.px, CAL.py, 11, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function finishCalib() {
+  CAL.active = false; CAL.phase = 'idle';
+  hideCenter();
+  if (CAL.samples.length < ZC.nz * 5) {
+    $('status').innerHTML = '<span style="color:#ff6b6b">标定样本不足，请重试</span>';
+    return;
+  }
+  const clf = fitZoneClassifier(CAL.samples, ZC.nz);
+  if (!clf) {
+    $('status').innerHTML = '<span style="color:#ff6b6b">分类器训练失败（样本太少或特征异常）</span>';
+    return;
+  }
+  ZC.clf = clf;
+  ZC.acc = clf.acc;
+  ZC.zone = null; ZC.votes = []; ZC.cand = null; ZC.switches = 0;
+  ZC.cursor = null;
+  S.ema = null; S.medBuf = []; S.blinkHold = 0; S.jitBuf = [];
+
+  const msg = '标定完成　区块 ' + ZC.nz + ' 个（每段一个）' +
+    '　训练自检 ' + Math.round(100 * clf.acc) + '%' +
+    '　样本 ' + CAL.samples.length + ' 条';
+  $('status').innerHTML = msg + '　<span style="color:#4ade80">可开始阅读</span>';
+  showCenter('标定完成', '分区自检 ' + Math.round(100 * clf.acc) + '%',
+             '真实泛化会低一些；靠时间投票补足。可开始阅读');
+  setTimeout(hideCenter, 3600);
+}
+
+// ---------------------------------------------------------------- 绑定
+// 所有按钮都包错误捕获并把报错显示到屏幕上 ——
+// 这样"点了没反应"就直接变成"明确告诉哪里出错"，不用开 F12。
+function safeClick(name, fn) {
+  return function () {
+    try { fn.apply(null, arguments); }
+    catch (err) {
+      const msg = (err && err.message) ? err.message : String(err);
+      const stk = (err && err.stack) ? String(err.stack).split('\n').slice(0, 3).join(' | ') : '';
+      window.__lastError = name + ': ' + msg + ' @ ' + stk;
+      try {
+        const st = $('status');
+        if (st) st.innerHTML = '<span style="color:#ff6b6b">' + name + ' 出错: ' + msg + '</span>';
+        showCenter(name + ' 出错', msg, stk.slice(0, 120));
+        setTimeout(hideCenter, 8000);
+      } catch (e2) { alert(name + ' 出错\n' + msg + '\n' + stk); }
+      console.error('[safeClick]', name, err);
+    }
+  };
+}
+$('btn-init').onclick = safeClick('授权加载', () => initAll());
+$('btn-fs').onclick = async () => {
+  try {
+    if (!document.fullscreenElement) await $('stage').requestFullscreen();
+    else await document.exitFullscreen();
+    setTimeout(() => { buildParagraphs(); }, 300);
+  } catch (e) { $('status').textContent = '全屏失败: ' + e.message; }
+};
+$('btn-start').onclick = safeClick('开始阅读', () => startReading());
+$('btn-calib').onclick = safeClick('自动标定', () => startCalib());
+$('btn-hud').onclick = () => $('hud').classList.toggle('on');
+$('btn-export').onclick = safeClick('导出', () => exportData());
+
+addEventListener('keydown', (e) => {
+  if (e.key === '[' || e.key === ']') {
+    const d = S.directIn || Object.assign({}, DIRECT_IN);
+    // 这里修过一个"按了没反应"的问题：
+    // 原先把半宽 clamp 到 [0.008, 0.25]，但换成绝对坐标特征后
+    // 半宽本身是 0.25 量级，一按就被夹回原值 —— 看不出任何变化。
+    // 现在不设起步门槛，只按比例缩放，并保证不退化到 0。
+    const k = (e.key === '[' ? 0.90 : 1.10);
+    const nh = Math.max((d.x1 - d.x0) / 2 * k, 1e-4);
+    const cx = (d.x0 + d.x1) / 2, cy = (d.y0 + d.y1) / 2;
+    const vh = Math.max((d.y1 - d.y0) / 2 * k, 1e-4);
+    S.directIn = { x0: cx - nh, x1: cx + nh, y0: cy - vh, y1: cy + vh };
+    AUTO.on = false;          // 手动调整后关闭自适应，否则会被自动覆盖
+    S.direct = fitDirect(); S.ema = null; S.filt = new OneEuro(SM.cutoff, SM.beta);
+    $('status').textContent = '灵敏度 ' + gainOf().toFixed(2) + '×';
+    return;
+  }
+  if (e.key === ' ') { e.preventDefault(); toggleMark(); return; }
+  if (e.key === 'h' || e.key === 'H') { $('hud').classList.toggle('on'); return; }
+
+  // 方向键：平移光标（阅读中消除恒定偏置）
+  const STEP = 20;
+  if (e.key === 'ArrowUp')    { OFFSET.y -= STEP; e.preventDefault();
+    $('status').textContent = '偏置 y ' + OFFSET.y; return; }
+  if (e.key === 'ArrowDown')  { OFFSET.y += STEP; e.preventDefault();
+    $('status').textContent = '偏置 y ' + OFFSET.y; return; }
+  if (e.key === 'ArrowLeft')  { OFFSET.x -= STEP; e.preventDefault();
+    $('status').textContent = '偏置 x ' + OFFSET.x; return; }
+  if (e.key === 'ArrowRight') { OFFSET.x += STEP; e.preventDefault();
+    $('status').textContent = '偏置 x ' + OFFSET.x; return; }
+  // R：以当前光标位置为零点重新对齐 —— 你正看着哪一段，
+  //    就把光标挪到那一段，一次性消除残余偏置。
+  if (e.key === 'r' || e.key === 'R') {
+    if (S.lastGoodPx) {
+      // 目标：把当前光标位置修正到"视线实际所指"附近并不可能直接知道，
+      // 所以这里用【当前段的中心】作为期望位置：
+      // 使用者按 R 之前先把视线放在他/她真正在看的段落上即可。
+      let want = null;
+      if (S.tracker && S.tracker.cur !== null) {
+        const r = S.regions.find(v => v.rid === S.tracker.cur);
+        if (r) want = [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2];
+      }
+      if (want) {
+        const pv = S.lastGoodPx;
+        OFFSET.x += want[0] - pv[0];
+        OFFSET.y += want[1] - pv[1];
+        $('status').textContent = '已按当前段重对齐　偏置 x=' +
+          Math.round(OFFSET.x) + ' y=' + Math.round(OFFSET.y);
+      } else {
+        $('status').textContent = '请先把视线放在你要读的那一段上，再按 R';
+      }
+    }
+    return;
+  }
+  // B：开关慢漂移消除
+  if (e.key === 'b' || e.key === 'B') {
+    DEBIAS.on = !DEBIAS.on;
+    DEBIAS.bx = null; DEBIAS.by = null;
+    $('status').textContent = '慢漂移消除 ' + (DEBIAS.on ? '开' : '关');
+    return;
+  }
+  // A：开/关两轴自适应（开着时会按实测范围自动设输入区）
+  if (e.key === 'a' || e.key === 'A') {
+    AUTO.on = !AUTO.on; AUTO.h = []; AUTO.v = [];
+    $('status').textContent = '两轴自适应 ' + (AUTO.on ? '开（约 1 秒后生效）' : '关（可用 [ ] 手动调）');
+    return;
+  }
+  // K / L：手动调整阻尼（截止频率倍率）。抖动大就按 K 加重。
+  if (e.key === 'k' || e.key === 'K') {
+    DAMP = Math.max(DAMP * 0.6, 0.15);
+    S.filt = null;
+    $('status').textContent = '阻尼 ' + DAMP.toFixed(2) + '（更重）';
+    return;
+  }
+  if (e.key === 'l' || e.key === 'L') {
+    DAMP = Math.min(DAMP / 0.6, 12);
+    S.filt = null;
+    $('status').textContent = '阻尼 ' + DAMP.toFixed(2) + '（更轻）';
+    return;
+  }
+  if (e.key === 'd' || e.key === 'D') { $('btn-export').click(); return; }
+});
+
+buildParagraphs();
+addEventListener('resize', () => { buildParagraphs(); });
+</script>
+</body>
+</html>
