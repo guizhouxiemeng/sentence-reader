@@ -141,6 +141,34 @@ Store ID  0RDCKFW W37BV
 
 ---
 
+---
+
+## 对外入口（三个，互相指向）
+
+| 入口 | 地址 |
+|---|---|
+| 商店 | <https://microsoftedge.microsoft.com/addons/detail/npbppgdpikakaldohlglkccjfomfkoob> |
+| 开源仓库 | <https://github.com/guizhouxiemeng/sentence-reader> |
+| 隐私政策 | <https://guizhouxiemeng.github.io/sentence-reader-privacy/> |
+
+**互指关系是有意摆的：**
+
+```
+GitHub 右侧 Website  ->  商店          看到源码的人能一键装
+商店的隐私政策        ->  GitHub issue   用户遇到问题能找到人
+README 开头          ->  商店直链
+隐私政策页脚          ->  GitHub 仓库
+```
+
+**仓库信息**：公开、MIT、默认分支 main、语言 JavaScript、Topics 六个
+（browser-extension / edge-addons / reading / chinese / education / ai）。
+
+> 语言一开始被 GitHub 标成 Python（它按字节数判定，tools/ 下的
+> Python 最多）。加 `.gitattributes` 把 pdf.js、gaze-research、
+> 文档排除出统计后，回到 JavaScript。
+
+---
+
 ## 原始提交清单（留档）
 
 

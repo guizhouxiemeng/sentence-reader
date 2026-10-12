@@ -1,17 +1,30 @@
 # 打包产物
 build/
 *.zip
+!gaze_p029379_eyes.zip
 
 # 快照（工作用的，不进仓库）
 .snapshots/
 
-# 眼动阶段的原始数据与模型（体积大，且阅读扩展用不到）
-data/
+# ---- 眼动阶段的原始数据 ----
+#  【要发的】：gaze_*_frames.csv、data/*.png、data/README.md
+#  【不发的】：眼部裁剪图（那是喂 MediaPipe 的输入，而 MediaPipe 没进仓库）
+#
+#  注意：这里【不能】图省事写 data/ 或 gaze_*.csv ——
+#  那会把正要发的数据一起挡掉，而且 git add 是静默跳过的，不报错。
+data/eyes_p029379/
+gaze_*_eyes.zip
+# 眼部图像：真实人眼，不公开（详见构建脚本里的说明）
+data/eye_grid.png
+data/signal_check_*.png
+
+# 由 CSV 生成的图，跑脚本能重画
+gaze_*_headfree.png
+gaze_*_diag.png
+gaze_*_experiment.png
+
+# 眼动模型（阅读扩展用不到）
 model.json
-gaze_*.csv
-gaze_*.png
-gaze_*.zip
-eyetrax_result.json
 
 # 第三方大件（MediaPipe 等）
 vendor/

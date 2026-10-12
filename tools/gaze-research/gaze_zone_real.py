@@ -36,7 +36,7 @@ for _s in ('stdout', 'stderr'):
     except Exception:
         pass
 
-ROOT = r"D:\projects\gaze-project"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 FILES = ['gaze_p411900_frames.csv', 'gaze_p463357_frames.csv', 'gaze_p496980_frames.csv']
 
 

@@ -41,7 +41,9 @@ for _s in ('stdout', 'stderr'):
     except Exception:
         pass
 
-CSV = r'D:\projects\gaze-project\gaze_p411900_frames.csv'
+# 相对路径 —— 从仓库根目录运行即可。
+#  原来写死成本机绝对路径，只在作者本机能跑。
+CSV = 'gaze_p411900_frames.csv'
 
 # 本项目 demo 的 7 维特征（CALIB_FEATS）
 SELF7 = ['f_irisL_y', 'f_irisL_x', 'f_yaw', 'f_pitch',

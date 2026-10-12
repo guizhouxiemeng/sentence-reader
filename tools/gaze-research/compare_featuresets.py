@@ -43,7 +43,9 @@ for _s in ('stdout', 'stderr'):
     except Exception:
         pass
 
-CSV = r'D:\projects\gaze-project\gaze_p411900_frames.csv'
+# 相对路径 —— 从仓库根目录运行即可。
+#  原来写死成本机绝对路径，只在作者本机能跑。
+CSV = 'gaze_p411900_frames.csv'
 
 RELATIVE = ['f_L_h', 'f_R_h', 'f_L_v', 'f_R_v', 'f_iod']
 ABSOLUTE = ['f_irisL_x', 'f_irisL_y', 'f_irisR_x', 'f_irisR_y',

@@ -17,6 +17,8 @@
 
 **安装：** <https://microsoftedge.microsoft.com/addons/detail/npbppgdpikakaldohlglkccjfomfkoob>
 
+**源码：** <https://github.com/guizhouxiemeng/sentence-reader>（MIT）
+
 > 商店搜索有新扩展的索引延迟，刚上架时搜不到是正常的 —— **用上面的直链**。
 
 下面这份文档记录的是它**为什么长成现在这样**：先做视线交互、实测发现不可用，
