@@ -1,0 +1,25 @@
+# 语言统计的归属规则。
+#
+# 为什么要这个文件：
+#   GitHub 按【字节数】自动判定仓库语言。这个仓库里 tools/ 下的 Python
+#   文件（尤其 gaze-research/ 那 71 个早期分析脚本）字节数最多，
+#   于是仓库被标成了 "Python"。
+#
+#   但这是个【浏览器扩展】仓库 —— 主体是 plugin/ 和 demo/ 里的 JS/HTML。
+#   标成 Python 会让人在按语言筛选时找不到它，进来的人也会先愣一下。
+#
+#   下面几条把"不算项目主体的东西"排除掉，让语言判定回到 JS/HTML。
+
+# pdf.js —— 第三方库，打包进扩展是为了离线可用，不是我们写的
+plugin/vendor/**        linguist-vendored
+
+# 早期视线研究的分析脚本 —— 已经归档，不再维护。
+#   它们记录的是"哪条路走不通"，价值在结论不在代码。
+tools/gaze-research/**  linguist-vendored
+
+# 文档
+*.md                    linguist-documentation
+LICENSE                 linguist-documentation
+
+# 商店素材
+store/**                linguist-documentation
